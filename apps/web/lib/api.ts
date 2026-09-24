@@ -190,7 +190,7 @@ export const api = {
   dates: (symbol: string) => get<{ dates: string[]; latest: string | null }>(`/dates?symbol=${symbol}`),
   overview: (symbol: string, date?: string) => get<Overview>(`/overview?symbol=${symbol}${date ? `&date=${date}` : ""}`),
   leaderboard: (symbol: string, date?: string) =>
-    get<LeaderboardRow[]>(`/leaderboard?symbol=${symbol}${date ? `&date=${date}` : ""}`),
+    get<LeaderboardRow[]>(`/leaderboard?${new URLSearchParams({ symbol, limit: "50", ...(date ? { date } : {}) })}`),
   trend: (symbol: string, date?: string) => get<BrokerTrend[]>(`/trend?symbol=${symbol}${date ? `&date=${date}` : ""}`),
   strength: (symbol: string, date?: string) =>
     get<Strength>(`/strength?symbol=${symbol}${date ? `&date=${date}` : ""}`),

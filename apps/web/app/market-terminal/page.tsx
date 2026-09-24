@@ -17,16 +17,18 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { Archive, ArrowLeftRight, CandlestickChart, CircleAlert, PanelRightClose, PanelRightOpen, RefreshCw, Search, Save, Wifi, WifiOff } from "lucide-react";
-import { api, type CtaReport, type LiveQuote, type MarketTimeframe, type TerminalQuote, type TrendTracker, type WatchlistQuote } from "@/lib/api";
+import { api, type LeaderboardRow, type LiveQuote, type MarketTimeframe, type TerminalQuote, type WatchlistQuote } from "@/lib/api";
 import { resolveTerminalPreferences, TERMINAL_PREFERENCES_KEY, type SubchartMode } from "@/lib/terminal-preferences";
 import { terminalChartTime, type ChartTime } from "@/lib/terminal-time";
 import { buildTradingSessionSpans } from "@/lib/trading-sessions";
 import { TradingSessionBackground, TRADING_SESSION_BACKGROUND_COLORS } from "@/lib/trading-session-background";
 import { buildBarExtremeMarkers, rankRecentBarExtremes, rankRecentOpenInterestChanges, type RankedBarExtreme } from "@/lib/bar-extremes";
 import { formatNumber } from "@/lib/utils";
-import { describeCtaReportProvenance, selectLinkedResearch, terminalQuoteMode } from "@/lib/terminal-research";
-import { EMPTY_BLUEPRINT, resolveTerminalBlueprints, TERMINAL_BLUEPRINTS_KEY, updateTerminalBlueprint, type TerminalBlueprint } from "@/lib/terminal-blueprints";
-import { detectTerminalEvents, resolveTerminalLayouts, TERMINAL_LAYOUTS_KEY, trendClassificationLabel, type TerminalEvent, type TerminalLayout } from "@/lib/terminal-workspace";
+import { terminalQuoteMode } from "@/lib/terminal-research";
+import { resolveTerminalLayouts, TERMINAL_LAYOUTS_KEY, type TerminalLayout } from "@/lib/terminal-workspace";
+import { terminalStatusTooltip } from "@/lib/terminal-subchart";
+import { netPositionBarValues } from "@/lib/leaderboard-visuals";
+import { leaderboardContractCode } from "@/lib/leaderboard-contract";
 
 const CONTRACTS = [
   { contract: "P2701", name: "棕榈油", exchange: "DCE", sector: "油脂油料" },
@@ -66,13 +68,16 @@ const BREAKOUT_UP = "#4F7180";
 const BREAKOUT_DOWN = "#4F5A61";
 const SUBCHART_UP = "#78929E";
 const SUBCHART_DOWN = "#B5AEA3";
+const NET_POSITION_COLOR = "#76BFA1";
+const NET_POSITION_INCREASE = "#D94727";
+const NET_POSITION_DECREASE = "#35A04C";
 
 function signed(value: number | null, digits = 2) {
   if (value == null || !Number.isFinite(value)) return "--";
   return `${value > 0 ? "+" : ""}${value.toFixed(digits)}`;
 }
 
-function chartOptions(height: number) {
+function chartOptions(height: number, showTimeScale = true) {
   return {
     width: 0,
     height,
@@ -87,7 +92,7 @@ function chartOptions(height: number) {
       horzLines: { color: CHART_GRID },
     },
     rightPriceScale: { borderColor: CHART_BORDER, scaleMargins: { top: 0.08, bottom: 0.08 } },
-    timeScale: { borderColor: CHART_BORDER, timeVisible: true, secondsVisible: false, rightOffset: 40 },
+    timeScale: { visible: showTimeScale, borderColor: CHART_BORDER, timeVisible: true, secondsVisible: false, rightOffset: 40 },
     crosshair: { mode: CrosshairMode.Normal, vertLine: { color: "#95A0AA", width: 1, style: 2 }, horzLine: { color: "#95A0AA", width: 1, style: 2 } },
     handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
     handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
@@ -189,7 +194,7 @@ function TerminalCharts({
   useEffect(() => {
     if (!priceContainer.current || !subchartContainer.current) return;
     initialized.current = false;
-    const priceChart = createChart(priceContainer.current, chartOptions(priceContainer.current.clientHeight));
+    const priceChart = createChart(priceContainer.current, chartOptions(priceContainer.current.clientHeight, false));
     const subchartChart = createChart(subchartContainer.current, chartOptions(subchartContainer.current.clientHeight));
     const candleSeries = priceChart.addSeries(CandlestickSeries, {
       upColor: UP,
@@ -504,81 +509,93 @@ function TerminalChartLoading({ subchartMode }: { subchartMode: SubchartMode }) 
 
 function StatusBadge({ snapshot }: { snapshot: TerminalQuote | null }) {
   const mode = terminalQuoteMode(snapshot);
-  if (mode === "LIVE") return <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#D6E2DC] bg-[#F1F6F3] px-2 py-1 text-xs text-[#648271]"><Wifi size={13} />盘中实时</span>;
-  if (mode === "STATIC") return <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#E9E0CD] bg-[#F8F5EC] px-2 py-1 text-xs text-[#927F55]"><Archive size={13} />静态/未更新</span>;
-  return <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#DDE3E8] px-2 py-1 text-xs text-[#7D8994]"><WifiOff size={13} />等待行情</span>;
+  const title = terminalStatusTooltip(snapshot);
+  if (mode === "LIVE") return <span title={title} className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#D6E2DC] bg-[#F1F6F3] px-2 py-1 text-xs text-[#648271]"><Wifi size={13} />盘中实时</span>;
+  if (mode === "STATIC") return <span title={title} className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#E9E0CD] bg-[#F8F5EC] px-2 py-1 text-xs text-[#927F55]"><Archive size={13} />静态/未更新</span>;
+  return <span title={title} className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#DDE3E8] px-2 py-1 text-xs text-[#7D8994]"><WifiOff size={13} />等待行情</span>;
 }
 
-function directionLabel(direction: string) {
-  return { UP: "上行", DOWN: "下行", SIDEWAYS: "横盘", NEUTRAL: "中性", UNKNOWN: "待确认" }[direction] ?? "待确认";
-}
-
-function localDateTime(value: string | null | undefined) {
-  if (!value) return "--";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
-}
-
-function TerminalContextPanel({
-  contract, blueprint, onBlueprintChange, quote, snapshot, trendSnapshot, trendError, ctaContracts, ctaReady, ctaError, ctaReport, ctaLoading, events,
-}: {
+function TerminalContextPanel({ contract }: {
   contract: string;
-  blueprint: TerminalBlueprint;
-  onBlueprintChange: (blueprint: TerminalBlueprint) => void;
-  quote: LiveQuote | null;
-  snapshot: TerminalQuote | null;
-  trendSnapshot: TrendTracker | null;
-  trendError: boolean;
-  ctaContracts: string[];
-  ctaReady: boolean;
-  ctaError: boolean;
-  ctaReport: CtaReport | null;
-  ctaLoading: boolean;
-  events: TerminalEvent[];
 }) {
-  const linked = selectLinkedResearch(contract, trendSnapshot?.instruments ?? [], ctaContracts, ctaReport);
-  const lastBar = quote?.bars?.at(-1) ?? quote?.daily_bars?.at(-1);
-  const field = (label: string, value: string) => <div className="flex justify-between gap-2 py-1.5 text-[11px]"><dt className="shrink-0 text-[#83909B]">{label}</dt><dd className="min-w-0 break-all text-right font-mono text-[#3E4D59]">{value}</dd></div>;
-  return <aside aria-label="合约信息" className="flex h-full w-[252px] shrink-0 flex-col overflow-y-auto border-l border-[#E2E7EC] bg-white px-3 py-2.5">
-    <div className="flex items-center justify-between border-b border-[#E7ECEF] pb-2"><h2 className="text-xs font-semibold text-[#344652]">合约信息</h2><span className="text-[10px] text-[#87939D]">随自选联动</span></div>
-    <section className="border-b border-[#E7ECEF] py-2">
-      <div className="mb-1.5 flex items-center justify-between"><h3 className="text-[11px] font-medium text-[#526674]">事件雷达</h3><span className="font-mono text-[10px] text-[#9AA5AD]">{events.length}</span></div>
-      {events.length ? <ul className="grid gap-1.5">{events.map((event) => <li key={event.id} className="border-l-2 border-[#A9854F] pl-2">
-        <div className="text-[11px] font-medium leading-4 text-[#495965]">{event.title}</div>
-        <div className="text-[10px] leading-4 text-[#75818C]">{event.detail}</div>
-        <div className="font-mono text-[9px] text-[#9AA5AD]">{localDateTime(event.time)}</div>
-      </li>)}</ul> : <p className="text-[10px] leading-4 text-[#98A2AA]">暂无触发事件 · 仅检查已完成K线</p>}
-    </section>
-    <section className="border-b border-[#E7ECEF] py-2"><div className="mb-1.5 flex items-center justify-between"><h3 className="text-[11px] font-medium text-[#526674]">人工交易蓝图</h3><span className="text-[10px] text-[#9AA5AD]">仅本机保存</span></div>
-      <div className="grid gap-1.5 text-[11px]">
-        <label className="flex items-center gap-2"><span className="w-[50px] shrink-0 text-[#83909B]">方向</span><select aria-label="蓝图方向" value={blueprint.direction} onChange={(event) => onBlueprintChange({ ...blueprint, direction: event.target.value as TerminalBlueprint["direction"] })} className="h-7 min-w-0 flex-1 rounded border border-[#DDE3E8] bg-white px-1.5 text-[#40515D]"><option value="WATCH">观察</option><option value="LONG">做多</option><option value="SHORT">做空</option></select></label>
-        <label className="flex items-center gap-2"><span className="w-[50px] shrink-0 text-[#83909B]">等什么</span><input aria-label="蓝图触发条件" value={blueprint.trigger} onChange={(event) => onBlueprintChange({ ...blueprint, trigger: event.target.value })} maxLength={200} placeholder="填写触发条件" className="h-7 min-w-0 flex-1 rounded border border-[#DDE3E8] bg-white px-1.5 text-[#40515D] placeholder:text-[#B1BAC1]" /></label>
-        <label className="flex items-center gap-2"><span className="w-[50px] shrink-0 text-[#83909B]">错在哪里</span><input aria-label="蓝图失效条件" value={blueprint.invalidation} onChange={(event) => onBlueprintChange({ ...blueprint, invalidation: event.target.value })} maxLength={200} placeholder="填写失效条件" className="h-7 min-w-0 flex-1 rounded border border-[#DDE3E8] bg-white px-1.5 text-[#40515D] placeholder:text-[#B1BAC1]" /></label>
-      </div>
-    </section>
-    <details className="border-b border-[#E7ECEF] py-2"><summary className="cursor-pointer text-[11px] font-medium text-[#526674]">数据凭证 · {snapshot?.cache_age_seconds == null ? "等待行情" : `${Math.round(snapshot.cache_age_seconds)} 秒`} · {lastBar ? (lastBar.is_closed ? "K线已完成" : "K线形成中") : "无K线"}</summary><dl className="mt-1">
-      {field("合约类型", quote?.instrument_type === "ACTUAL" ? "具体交割合约" : "待确认")}
-      {field("数据标的", quote?.tq_symbol ?? "--")}
-      {field("交易日归属*", quote?.trading_day ?? "--")}
-      {field("报价时刻", quote?.quote_time ?? "--")}
-      {field("报价来源", quote?.price_source === "QUOTE" ? "TqSdk 报价" : quote?.price_source === "BAR_CLOSE" ? "K线收盘价回退" : "暂无报价")}
-      {field("快照写入", localDateTime(snapshot?.fetched_at))}
-      {field("快照年龄", snapshot?.cache_age_seconds == null ? "--" : `${Math.round(snapshot.cache_age_seconds)} 秒`)}
-      {field("最新K线", lastBar ? (lastBar.is_closed ? "已完成" : "形成中") : "--")}
-    </dl><div className="mt-1 text-[10px] text-[#8A969F]">北京时间；*夜盘按下个工作日推算，节假日需复核交易所日历。过期快照不标记实时。</div></details>
-    <section className="border-b border-[#E7ECEF] py-2"><h3 className="mb-1 text-[11px] font-medium text-[#526674]">当前量仓</h3><dl>
-      {field("成交量", quote?.volume == null ? "--" : `${formatNumber(quote.volume)} 手`)}
-      {field("持仓量", quote?.open_interest == null ? "--" : `${formatNumber(quote.open_interest)} 手`)}
-      {field("本周期 OI 变化", lastBar?.oi_change == null ? "--" : `${signed(lastBar.oi_change, 0)} 手`)}
-    </dl></section>
-    <section className="border-b border-[#E7ECEF] py-2"><h3 className="mb-1 text-[11px] font-medium text-[#526674]">趋势跟踪</h3>
-      {linked.trend ? <><div className="text-xs font-medium text-[#405B66]">{directionLabel(linked.trend.direction)} · {linked.trend.setup_state === "PULLBACK" ? "回踩" : linked.trend.setup_state === "CONTINUATION" ? "延续" : linked.trend.setup_state === "CONSOLIDATION" ? "整理" : "观察"}</div><div className="mt-1 text-[10px] text-[#87939D]">趋势分 {linked.trend.trend_score ?? "--"} · {linked.trend.data_quality === "COMPLETE" ? "数据完整" : "数据不足"}</div><div className="mt-1 text-[10px] text-[#9AA5AD]">价格样本截至 {linked.trend.points.at(-1)?.date ?? "--"}</div></> : <p className="text-[11px] leading-4 text-[#88949E]">{trendError ? "趋势服务暂不可用" : trendSnapshot ? "当前具体合约未覆盖；不借用其他主力合约的结论。" : "正在读取趋势…"}</p>}
-      {trendSnapshot && <div className="mt-1 text-[10px] text-[#9AA5AD]">研究快照 {localDateTime(trendSnapshot.fetched_at)}</div>}
-    </section>
-    <section className="py-2"><h3 className="mb-1 text-[11px] font-medium text-[#526674]">CTA 校验</h3>
-      {ctaError ? <p className="text-[11px] text-[#88949E]">CTA 服务暂不可用</p> : !ctaReady || ctaLoading ? <p className="text-[11px] text-[#88949E]">正在读取 CTA…</p> : !linked.ctaConfigured ? <p className="text-[11px] text-[#88949E]">该合约尚未配置 CTA 校验</p> : linked.ctaReport ? <><div className="text-xs font-medium text-[#405B66]">{linked.ctaReport.system_state} · {linked.ctaReport.direction}</div><div className="mt-1 text-[10px] text-[#87939D]">{describeCtaReportProvenance(linked.ctaReport)}</div><div className="mt-1 text-[10px] text-[#9AA5AD]">报告生成 {localDateTime(linked.ctaReport.generated_at)}</div></> : <p className="text-[11px] text-[#88949E]">已配置，尚无机器报告</p>}
-    </section>
-    <p className="mt-auto border-t border-[#E7ECEF] pt-2 text-[10px] leading-4 text-[#95A0A8]">趋势与 CTA 是独立研究结果；未覆盖不代表看空，也不构成交易指令。</p>
+  const contractCode = leaderboardContractCode(contract);
+  const [leaderboard, setLeaderboard] = useState<{ symbol: string; date: string | null; rows: LeaderboardRow[] } | null>(null);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(true);
+  const [leaderboardError, setLeaderboardError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setLeaderboardLoading(true);
+    setLeaderboardError(false);
+    if (!contractCode) {
+      setLeaderboard(null);
+      setLeaderboardLoading(false);
+      return () => { active = false; };
+    }
+    const load = async () => {
+      try {
+        const dates = await api.dates(contractCode);
+        if (!dates.latest) {
+          if (active) setLeaderboard({ symbol: contractCode, date: null, rows: [] });
+          return;
+        }
+        const rows = await api.leaderboard(contractCode, dates.latest);
+        if (active) setLeaderboard({ symbol: contractCode, date: dates.latest, rows });
+      } catch {
+        if (active) {
+          setLeaderboard(null);
+          setLeaderboardError(true);
+        }
+      } finally {
+        if (active) setLeaderboardLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [contractCode]);
+
+  const currentLeaderboard = leaderboard?.symbol === contractCode ? leaderboard : null;
+  const longSeats = (currentLeaderboard?.rows ?? [])
+    .filter((row) => row.net_position > 0)
+    .sort((left, right) => right.net_position - left.net_position)
+    .slice(0, 10);
+  const shortSeats = (currentLeaderboard?.rows ?? [])
+    .filter((row) => row.net_position < 0)
+    .sort((left, right) => left.net_position - right.net_position)
+    .slice(0, 10);
+  const longValues = longSeats.map((row) => netPositionBarValues(row.net_position, row.net_change));
+  const shortValues = shortSeats.map((row) => netPositionBarValues(row.net_position, row.net_change));
+  const maxLong = Math.max(1, ...longValues.map((values) => values.position + Math.abs(values.change)));
+  const maxShort = Math.max(1, ...shortValues.map((values) => values.position + Math.abs(values.change)));
+  const renderLadder = (title: string, rows: LeaderboardRow[], maxValue: number) => {
+    return <section className="border-b border-[#E7ECEF] py-2 last:border-0">
+      <h3 className="mb-1.5 text-[10px] font-semibold text-[#526674]">{title}</h3>
+      {rows.length ? <ol className="grid gap-1">{rows.map((row, index) => {
+        const values = netPositionBarValues(row.net_position, row.net_change);
+        const changeColor = values.change > 0 ? NET_POSITION_INCREASE : values.change < 0 ? NET_POSITION_DECREASE : "#AEB8BD";
+        return <li key={row.broker} className="relative flex h-7 items-center overflow-hidden rounded-sm border border-[#E7ECEF] bg-[#FBFCFD] px-2">
+        <span aria-hidden="true" className="absolute inset-y-0 left-0 right-0 flex">
+          <span style={{ width: `${values.position / maxValue * 100}%`, backgroundColor: NET_POSITION_COLOR }} />
+          {values.change !== 0 && <span className="min-w-[2px]" style={{ width: `${Math.abs(values.change) / maxValue * 100}%`, backgroundColor: changeColor }} />}
+        </span>
+        <span className="relative flex min-w-0 flex-1 items-center justify-between gap-1 text-[10px]">
+          <span className="truncate text-[#53616C]">{index + 1}. {row.broker}</span>
+          <span className="shrink-0 font-mono font-medium" title={`净持仓 ${formatNumber(values.position)}，${values.change > 0 ? "增加" : values.change < 0 ? "减少" : "持平"} ${formatNumber(Math.abs(values.change))}`}><span className="text-[#537565]">{formatNumber(values.position)}</span><span className={`ml-0.5 ${values.change > 0 ? "text-[#C5442B]" : values.change < 0 ? "text-[#31864A]" : "text-[#7F8A90]"}`}>/{signed(values.change, 0)}</span></span>
+        </span>
+      </li>})}</ol> : <p className="py-2 text-center text-[10px] text-[#98A2AA]">暂无上榜席位</p>}
+    </section>;
+  };
+
+  return <aside aria-label="关键信息" className="flex h-full w-[252px] shrink-0 flex-col overflow-y-auto border-l border-[#E2E7EC] bg-white px-3 py-2.5">
+    <div className="flex items-start justify-between gap-1 border-b border-[#E7ECEF] pb-2"><div><h2 className="text-xs font-semibold text-[#344652]">龙虎榜净持仓</h2><div className="mt-0.5 text-[10px] text-[#87939D]">{contractCode ?? contract} 合约级</div></div><span className="text-right text-[9px] leading-4 text-[#9AA5AD]">数据日期<br />{currentLeaderboard?.date ?? "--"}</span></div>
+    <div className="flex items-center justify-end gap-1.5 border-b border-[#E7ECEF] py-1 text-[9px] text-[#87939D]"><span>净持仓</span><i aria-hidden="true" className="h-2 w-2 rounded-sm bg-[#76BFA1]" /><span>增加</span><i aria-hidden="true" className="h-2 w-2 rounded-sm bg-[#D94727]" /><span>减少</span><i aria-hidden="true" className="h-2 w-2 rounded-sm bg-[#35A04C]" /></div>
+      {(leaderboardLoading || (!currentLeaderboard && !leaderboardError)) ? <p className="py-5 text-center text-[10px] text-[#98A2AA]">正在读取龙虎榜…</p> : leaderboardError ? <p className="py-5 text-center text-[10px] text-[#98A2AA]">龙虎榜数据暂不可用</p> : !currentLeaderboard?.rows.length ? <p className="py-5 text-center text-[10px] text-[#98A2AA]">该品种暂无已收录数据</p> : <>
+        <div className="min-h-0 flex-1 overflow-y-auto pt-1">
+          {renderLadder("多头榜 · 净多席位", longSeats, maxLong)}
+          {renderLadder("空头榜 · 净空席位", shortSeats, maxShort)}
+        </div>
+      </>}
+    <p className="border-t border-[#E7ECEF] pt-2 text-[9px] leading-4 text-[#95A0A8]">仅统计已收录席位；榜外席位不代表零持仓。</p>
   </aside>;
 }
 
@@ -603,29 +620,6 @@ export default function MarketTerminalPage() {
   const [compareSector, setCompareSector] = useState<string | null>(null);
   const [collapsedSectors, setCollapsedSectors] = useState<Record<string, boolean>>({});
   const commandInput = useRef<HTMLInputElement>(null);
-  const trendStates = useRef(new Map<string, string>());
-  const [trendEvents, setTrendEvents] = useState<Record<string, TerminalEvent>>({});
-  const [trendSnapshot, setTrendSnapshot] = useState<TrendTracker | null>(null);
-  const [trendError, setTrendError] = useState(false);
-  const [ctaContracts, setCtaContracts] = useState<string[]>([]);
-  const [ctaReady, setCtaReady] = useState(false);
-  const [ctaError, setCtaError] = useState(false);
-  const [ctaReport, setCtaReport] = useState<CtaReport | null>(null);
-  const [ctaLoading, setCtaLoading] = useState(false);
-  const [blueprints, setBlueprints] = useState<Record<string, TerminalBlueprint>>({});
-  const [blueprintsReady, setBlueprintsReady] = useState(false);
-
-  useEffect(() => {
-    let saved: string | null = null;
-    try { saved = window.localStorage.getItem(TERMINAL_BLUEPRINTS_KEY); } catch { /* Storage may be disabled. */ }
-    setBlueprints(resolveTerminalBlueprints(saved, CONTRACTS.map((item) => item.contract)));
-    setBlueprintsReady(true);
-  }, []);
-
-  useEffect(() => {
-    if (!blueprintsReady) return;
-    try { window.localStorage.setItem(TERMINAL_BLUEPRINTS_KEY, JSON.stringify(blueprints)); } catch { /* Keep the in-memory blueprint. */ }
-  }, [blueprints, blueprintsReady]);
 
   useEffect(() => {
     let saved: string | null = null;
@@ -638,26 +632,6 @@ export default function MarketTerminalPage() {
     if (!layoutsReady) return;
     try { window.localStorage.setItem(TERMINAL_LAYOUTS_KEY, JSON.stringify(layouts)); } catch { /* Saved layouts are an optional convenience. */ }
   }, [layouts, layoutsReady]);
-
-  useEffect(() => {
-    if (!trendSnapshot) return;
-    for (const instrument of trendSnapshot.instruments) {
-      const previous = trendStates.current.get(instrument.contract);
-      if (previous && previous !== instrument.classification) {
-        setTrendEvents((current) => ({
-          ...current,
-          [instrument.contract]: {
-            id: `trend:${instrument.contract}:${previous}:${instrument.classification}:${trendSnapshot.fetched_at}`,
-            kind: "trend",
-            title: "趋势状态变化",
-            detail: `${trendClassificationLabel(previous)} → ${trendClassificationLabel(instrument.classification)}`,
-            time: trendSnapshot.fetched_at,
-          },
-        }));
-      }
-      trendStates.current.set(instrument.contract, instrument.classification);
-    }
-  }, [trendSnapshot]);
 
   useEffect(() => {
     if (commandOpen) {
@@ -736,46 +710,6 @@ export default function MarketTerminalPage() {
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    const loadTrend = async () => {
-      try {
-        const next = await api.trendTracker();
-        if (active) { setTrendSnapshot(next); setTrendError(false); }
-      } catch {
-        if (active) setTrendError(true);
-      }
-    };
-    void loadTrend();
-    const timer = window.setInterval(loadTrend, 60000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    api.ctaContracts().then((rows) => {
-      if (active) { setCtaContracts(rows.map((row) => row.contract)); setCtaError(false); }
-    }).catch(() => { if (active) setCtaError(true); })
-      .finally(() => { if (active) setCtaReady(true); });
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    if (!ctaReady || !ctaContracts.includes(contract)) {
-      setCtaReport(null);
-      setCtaLoading(false);
-      return;
-    }
-    let active = true;
-    setCtaReport(null);
-    setCtaLoading(true);
-    api.ctaLatestReport(contract).then((report) => {
-      if (active) { setCtaReport(report); setCtaError(false); }
-    }).catch(() => { if (active) setCtaError(true); })
-      .finally(() => { if (active) setCtaLoading(false); });
-    return () => { active = false; };
-  }, [contract, ctaContracts, ctaReady]);
-
   const load = useCallback(async (manual = false) => {
     if (manual) setRefreshing(true);
     try {
@@ -816,11 +750,6 @@ export default function MarketTerminalPage() {
     return CONTRACTS.filter((item) => !query || `${item.name} ${item.contract} ${item.exchange} ${item.sector}`.toLocaleLowerCase().includes(query));
   }, [commandQuery]);
   const comparedContracts = useMemo(() => CONTRACTS.filter((item) => item.sector === compareSector), [compareSector]);
-  const currentEvents = useMemo(() => {
-    const bars = quote?.bars?.length ? quote.bars : quote?.daily_bars ?? [];
-    return detectTerminalEvents(bars, trendEvents[contract] ?? null);
-  }, [quote, contract, trendEvents]);
-
   const saveCurrentLayout = () => {
     const name = layoutName.trim() || `${selected.name} ${TIMEFRAMES.find((item) => item.value === timeframe)?.label ?? timeframe}`;
     const layout: TerminalLayout = {
@@ -891,7 +820,7 @@ export default function MarketTerminalPage() {
                 <div className="min-w-0 text-base font-semibold text-[#253041]">{selected.name} <span className="ml-1 font-mono text-xs font-normal text-[#7A8792]">{selected.contract}</span></div>
                 {quote && <div className="flex shrink-0 items-baseline gap-1.5 border-l border-[#E0E5E9] pl-2"><span className="font-mono text-sm font-semibold text-[#253041]">{quote.last_price == null ? "--" : formatNumber(quote.last_price)}</span><span className={`font-mono text-[10px] ${quoteChange == null ? "text-[#7A8792]" : quoteChange >= 0 ? "text-[#6E8794]" : "text-[#9A9183]"}`}>{signed(quote.change)} {quoteChange == null ? "" : `(${signed(quoteChange)}%)`}</span></div>}
               </div>
-              <div className="flex shrink-0 items-center gap-1.5"><StatusBadge snapshot={activeSnapshot} /><button type="button" onClick={() => setCommandOpen(true)} className="inline-flex h-7 items-center gap-1.5 rounded border border-[#D6DDE2] px-2 text-[11px] text-[#65737E] hover:bg-[#F3F5F6] hover:text-[#34404C]"><Search size={13} /><span>搜索合约</span><kbd className="hidden rounded border border-[#E0E5E9] px-1 text-[9px] text-[#8B969F] lg:inline">⌘K</kbd></button><button type="button" aria-label={contextVisible ? "收起合约信息" : "展开合约信息"} title={contextVisible ? "收起合约信息" : "展开合约信息"} onClick={() => setContextVisible((value) => !value)} className="grid h-7 w-7 shrink-0 place-items-center rounded border border-[#D6DDE2] text-[#72808B] hover:border-[#AEBAC2] hover:bg-[#F3F5F6] hover:text-[#34404C]">{contextVisible ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}</button><button type="button" aria-label="刷新行情" title="刷新行情" onClick={() => load(true)} disabled={refreshing} className="grid h-7 w-7 shrink-0 place-items-center rounded border border-[#D6DDE2] text-[#72808B] hover:border-[#AEBAC2] hover:bg-[#F3F5F6] hover:text-[#34404C] disabled:opacity-50"><RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /></button></div>
+              <div className="flex shrink-0 items-center gap-1.5"><StatusBadge snapshot={activeSnapshot} /><button type="button" onClick={() => setCommandOpen(true)} className="inline-flex h-7 items-center gap-1.5 rounded border border-[#D6DDE2] px-2 text-[11px] text-[#65737E] hover:bg-[#F3F5F6] hover:text-[#34404C]"><Search size={13} /><span>搜索合约</span><kbd className="hidden rounded border border-[#E0E5E9] px-1 text-[9px] text-[#8B969F] lg:inline">⌘K</kbd></button><button type="button" aria-label={contextVisible ? "收起关键数据" : "展开关键数据"} title={contextVisible ? "收起关键数据" : "展开关键数据"} onClick={() => setContextVisible((value) => !value)} className="grid h-7 w-7 shrink-0 place-items-center rounded border border-[#D6DDE2] text-[#72808B] hover:border-[#AEBAC2] hover:bg-[#F3F5F6] hover:text-[#34404C]">{contextVisible ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}</button><button type="button" aria-label="刷新行情" title="刷新行情" onClick={() => load(true)} disabled={refreshing} className="grid h-7 w-7 shrink-0 place-items-center rounded border border-[#D6DDE2] text-[#72808B] hover:border-[#AEBAC2] hover:bg-[#F3F5F6] hover:text-[#34404C] disabled:opacity-50"><RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /></button></div>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-1">
               {TIMEFRAMES.map((item) => <button key={item.value} type="button" onClick={() => setTimeframe(item.value)} className={`rounded px-2.5 py-0.5 text-[11px] transition-colors ${timeframe === item.value ? "bg-[#DFE8EC] font-medium text-[#344F5A]" : "text-[#6F7C87] hover:bg-[#F0F3F5] hover:text-[#34404C]"}`}>{item.label}</button>)}
@@ -905,14 +834,13 @@ export default function MarketTerminalPage() {
           </header>
 
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-1.5 md:px-4 md:py-2">
-            <div className="mb-1 flex min-h-5 shrink-0 items-center justify-between gap-2 text-[10px] text-[#75818C]"><span>{activeSnapshot?.source ?? "TQSDK"} · {activeSnapshot?.timeframe_label ?? TIMEFRAMES.find((item) => item.value === timeframe)?.label} · {activeSnapshot ? `快照 ${new Date(activeSnapshot.fetched_at).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "正在连接"}</span><span className="shrink-0 font-mono">{quote?.quote_time?.slice(11) ?? "无实时报价"}</span></div>
             {error && <div role="alert" className="mb-1 flex shrink-0 items-center gap-2 rounded border border-[#E7D3D1] bg-[#FBF6F5] px-3 py-1.5 text-xs text-[#966A66]"><CircleAlert size={14} />{error}</div>}
             {activeSnapshot?.connection_error && <div role="status" className="mb-1 shrink-0 rounded border border-[#E9E0CD] bg-[#F8F5EC] px-3 py-1.5 text-[11px] text-[#927F55]">{activeSnapshot.connection_error}</div>}
             <div className="flex min-h-0 flex-1 gap-2 overflow-hidden">
               <div className="h-full min-h-0 min-w-0 flex-1">
                 {loading && !quote ? <TerminalChartLoading subchartMode={subchartMode} /> : quote ? <TerminalCharts key={`${contract}-${timeframe}`} quote={quote} subchartMode={subchartMode} onSubchartModeChange={setSubchartMode} channelVisible={channelVisible} onChannelVisibleChange={setChannelVisible} /> : <TerminalChartLoading subchartMode={subchartMode} />}
               </div>
-              {contextVisible && <div className="h-full min-h-0 w-[252px] shrink-0 overflow-hidden rounded border border-[#DDE3E8] bg-white"><TerminalContextPanel contract={contract} blueprint={blueprints[contract] ?? EMPTY_BLUEPRINT} onBlueprintChange={(value) => setBlueprints((current) => updateTerminalBlueprint(current, contract, value))} quote={quote} snapshot={activeSnapshot} trendSnapshot={trendSnapshot} trendError={trendError} ctaContracts={ctaContracts} ctaReady={ctaReady} ctaError={ctaError} ctaReport={ctaReport} ctaLoading={ctaLoading} events={currentEvents} /></div>}
+              {contextVisible && <div className="h-full min-h-0 w-[252px] shrink-0 overflow-hidden rounded border border-[#DDE3E8] bg-white"><TerminalContextPanel contract={contract} /></div>}
             </div>
             <div className="mt-1 hidden shrink-0 flex-wrap items-center justify-between gap-2 text-[10px] text-[#87939D] md:flex"><span>数据来自 TqSdk；休市时使用最后一次持久化快照。</span><span>持仓量变化 = 相邻 K 线收盘持仓量之差，不代表多空方向。</span></div>
           </div>

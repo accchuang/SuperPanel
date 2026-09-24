@@ -10,3 +10,7 @@ apps/web/.next/
 apps/web/.env.local
 
 data/*.db
+data/live_market/
+data/real_positions*.csv
+data/real_oils*.csv
+apps/web/tsconfig.tsbuildinfo

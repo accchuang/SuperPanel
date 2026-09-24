@@ -161,7 +161,7 @@ def overview(symbol: str = Query(...), date_: date | None = Query(None, alias="d
 def leaderboard(
     symbol: str = Query(...),
     date_: date | None = Query(None, alias="date"),
-    limit: int = Query(20, ge=1, le=50),
+    limit: int = Query(50, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
     try:

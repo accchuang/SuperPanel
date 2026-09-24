@@ -48,7 +48,7 @@ def get_overview(db: Session, symbol: str, trade_date: date | None) -> dict:
     }
 
 
-def get_leaderboard(db: Session, symbol: str, trade_date: date | None, limit: int = 20) -> list[PositionFeature]:
+def get_leaderboard(db: Session, symbol: str, trade_date: date | None, limit: int = 50) -> list[PositionFeature]:
     day = resolve_date(db, symbol, trade_date)
     return db.scalars(
         select(PositionFeature)

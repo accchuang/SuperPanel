@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from fetch_real_positions import clean_broker, fetch_eastmoney_dce
+from fetch_real_positions import clean_broker, fetch_eastmoney_contract_positions, fetch_eastmoney_dce, fetch_positions, normalize_eastmoney_contract_payload, normalize_payload
 from fetch_real_positions import import_and_compute, write_csv
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -25,6 +25,105 @@ def response(pages, value):
 
 
 class FetchTests(unittest.TestCase):
+    @patch("fetch_real_positions.requests.get")
+    def test_contract_fetch_queries_the_exact_market_contract(self, get):
+        response = MagicMock()
+        response.json.return_value = {
+            "code": 10000,
+            "data": {
+                "contract": "p2701", "tradeDate": "20260924",
+                "longInfoList": [{"futureCompanyName": "多席位", "longNum": 120, "longChange": 5}],
+                "shortInfoList": [{"futureCompanyName": "空席位", "shortNum": 70, "shortChange": 2}],
+            },
+        }
+        get.return_value = response
+
+        rows = fetch_eastmoney_contract_positions("P2701", date(2026, 9, 24))
+
+        self.assertEqual({row["symbol"] for row in rows}, {"P2701"})
+        params = get.call_args.kwargs["params"]
+        self.assertEqual(params, {"date": "20260924", "contract": "p2701", "market": "114"})
+
+    @patch("fetch_real_positions.fetch_eastmoney_contract_positions")
+    def test_fetch_positions_uses_contract_source_without_variety_fallback(self, fetch_exact):
+        fetch_exact.return_value = [{
+            "date": "2026-09-24", "symbol": "P2701", "broker": "合约席位", "rank": 1,
+            "long_position": 120, "long_change": 5, "short_position": 70, "short_change": 2,
+        }]
+
+        rows = fetch_positions(["P2701"], [date(2026, 9, 24)], "auto")
+
+        self.assertEqual([row["symbol"] for row in rows], ["P2701"])
+        fetch_exact.assert_called_once_with("P2701", date(2026, 9, 24))
+
+    def test_contract_payload_merges_exact_long_and_short_seats(self):
+        payload = {
+            "code": 10000,
+            "data": {
+                "contract": "p2701",
+                "tradeDate": "20260924",
+                "longInfoList": [
+                    {"futureCompanyName": "测试期货(代客)", "longNum": 120, "longChange": 5},
+                    {"futureCompanyName": "仅多席位", "longNum": 90, "longChange": -3},
+                ],
+                "shortInfoList": [
+                    {"futureCompanyName": "测试期货（代客）", "shortNum": 70, "shortChange": 2},
+                    {"futureCompanyName": "仅空席位", "shortNum": 80, "shortChange": -4},
+                ],
+            },
+        }
+
+        rows = normalize_eastmoney_contract_payload(payload, "P2701", date(2026, 9, 24))
+
+        self.assertEqual(len(rows), 3)
+        merged = next(row for row in rows if row["broker"] == "测试期货")
+        self.assertEqual(merged["symbol"], "P2701")
+        self.assertEqual(merged["long_position"], 120)
+        self.assertEqual(merged["long_change"], 5)
+        self.assertEqual(merged["short_position"], 70)
+        self.assertEqual(merged["short_change"], 2)
+
+    def test_contract_payload_rejects_other_contract_and_wrong_date(self):
+        payload = {
+            "code": 10000,
+            "data": {
+                "contract": "p2705", "tradeDate": "20260924",
+                "longInfoList": [{"futureCompanyName": "错合约", "longNum": 100, "longChange": 1}],
+                "shortInfoList": [],
+            },
+        }
+        self.assertEqual(normalize_eastmoney_contract_payload(payload, "P2701", date(2026, 9, 24)), [])
+        payload["data"]["contract"] = "p2701"
+        payload["data"]["tradeDate"] = "20260923"
+        self.assertEqual(normalize_eastmoney_contract_payload(payload, "P2701", date(2026, 9, 24)), [])
+
+    def test_normalize_payload_keeps_only_the_requested_contract(self):
+        import pandas as pd
+
+        payload = {
+            "P": pd.DataFrame([
+                {
+                    "var": "P", "symbol": "P2701",
+                    "long_party_name": "合约席位", "long_open_interest": 120,
+                    "long_open_interest_chg": 5, "short_party_name": "合约席位",
+                    "short_open_interest": 70, "short_open_interest_chg": 2,
+                },
+                {
+                    "var": "P", "symbol": "P2705",
+                    "long_party_name": "其他合约席位", "long_open_interest": 900,
+                    "long_open_interest_chg": 30, "short_party_name": "其他合约席位",
+                    "short_open_interest": 100, "short_open_interest_chg": 4,
+                },
+            ])
+        }
+
+        rows = normalize_payload(payload, {"P2701"}, date(2026, 9, 24))
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["symbol"], "P2701")
+        self.assertEqual(rows[0]["broker"], "合约席位")
+        self.assertEqual(rows[0]["long_position"], 120)
+
     @patch("fetch_real_positions.requests.Session")
     def test_retry_discards_partial_pages(self, session):
         session.return_value.get.side_effect = [

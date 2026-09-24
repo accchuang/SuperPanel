@@ -17,6 +17,7 @@ SYMBOL_EXCHANGE = {
     "AO": "SHFE",
     "AP": "CZCE",
     "AU": "SHFE",
+    "B": "DCE",
     "C": "DCE",
     "CF": "CZCE",
     "CS": "DCE",
@@ -25,22 +26,38 @@ SYMBOL_EXCHANGE = {
     "I": "DCE",
     "J": "DCE",
     "JD": "DCE",
+    "LH": "DCE",
     "JM": "DCE",
     "M": "DCE",
+    "MA": "CZCE",
     "NI": "SHFE",
+    "NR": "INE",
     "OI": "CZCE",
     "P": "DCE",
     "PB": "SHFE",
     "PK": "CZCE",
     "RB": "SHFE",
+    "BR": "SHFE",
     "RM": "CZCE",
     "SF": "CZCE",
     "SM": "CZCE",
     "SN": "SHFE",
     "SR": "CZCE",
+    "TA": "CZCE",
+    "V": "DCE",
+    "EB": "DCE",
+    "RU": "SHFE",
     "Y": "DCE",
     "ZN": "SHFE",
 }
+
+MARKET_IDS = {"SHFE": "113", "DCE": "114", "CZCE": "115", "INE": "142", "GFEX": "225", "CFFEX": "220"}
+CZCE_SYMBOLS = {"AP", "CF", "CJ", "CY", "FG", "JR", "LR", "MA", "OI", "PF", "PK", "PM", "PX", "RI", "RM", "RS", "SA", "SF", "SH", "SM", "SR", "TA", "UR", "WH", "ZC"}
+DEFAULT_CONTRACTS = [
+    "P2701", "OI2701", "Y2701", "LH2611", "JD2611", "SR2701", "CF2701",
+    "M2701", "A2611", "B2611", "V2701", "TA2701", "EB2611", "MA2610",
+    "RU2701", "NR2611", "BR2611",
+]
 
 EXCHANGE_FUNCTIONS = {
     "DCE": ["futures_dce_position_rank", "get_dce_rank_table"],
@@ -101,6 +118,20 @@ def clean_broker(value: Any) -> str:
 def root_symbol(value: Any) -> str:
     match = re.match(r"([A-Za-z]+)", str(value).strip())
     return match.group(1).upper() if match else str(value).strip().upper()
+
+
+def is_contract_code(value: str) -> bool:
+    return re.fullmatch(r"[A-Za-z]+\d{3,6}", value.strip()) is not None
+
+
+def eastmoney_contract_code(contract: str) -> str:
+    """Return the exchange/vendor code while keeping the requested exact contract."""
+    normalized = contract.strip().upper()
+    root = root_symbol(normalized)
+    suffix = normalized[len(root):]
+    if root in CZCE_SYMBOLS and len(suffix) == 4:
+        suffix = suffix[-3:]
+    return f"{root.lower()}{suffix}"
 
 
 def pick_column(columns: list[str], candidates: list[str]) -> str | None:
@@ -168,14 +199,26 @@ def normalize_payload(payload: Any, wanted_symbols: set[str], trade_date: date) 
         if not long_party_col or not long_position_col or not short_party_col or not short_position_col:
             continue
 
+        exact_contracts = {symbol.upper() for symbol in wanted_symbols if is_contract_code(symbol)}
+        contract_aliases = {eastmoney_contract_code(symbol): symbol.upper() for symbol in exact_contracts}
+        if exact_contracts and not contract_col:
+            continue
+
         for _, row in df.iterrows():
-            symbol = ""
-            if variety_col:
-                symbol = root_symbol(row.get(variety_col))
-            if not symbol and contract_col:
-                symbol = root_symbol(row.get(contract_col))
-            if symbol not in wanted_symbols:
-                continue
+            if exact_contracts:
+                raw_contract = str(row.get(contract_col) or "").strip().upper()
+                vendor_contract = re.sub(r"[^A-Z0-9]", "", raw_contract).lower()
+                symbol = contract_aliases.get(vendor_contract)
+                if not symbol:
+                    continue
+            else:
+                symbol = ""
+                if variety_col:
+                    symbol = root_symbol(row.get(variety_col))
+                if not symbol and contract_col:
+                    symbol = root_symbol(row.get(contract_col))
+                if symbol not in wanted_symbols:
+                    continue
 
             long_broker = clean_broker(row.get(long_party_col))
             if long_broker and long_broker not in {"合计", "总计", "nan"}:
@@ -199,7 +242,9 @@ def normalize_payload(payload: Any, wanted_symbols: set[str], trade_date: date) 
             brokers,
             key=lambda item: item[1]["long_position"] + item[1]["short_position"],
             reverse=True,
-        )[:20]
+        )
+        if not is_contract_code(symbol):
+            ranked = ranked[:20]
         for rank, (broker, values) in enumerate(ranked, start=1):
             rows.append(
                 {
@@ -299,8 +344,80 @@ def fetch_eastmoney_dce(symbols: list[str], trade_date: date) -> list[dict[str, 
     return normalized
 
 
+def normalize_eastmoney_contract_payload(payload: dict[str, Any], contract: str, trade_date: date) -> list[dict[str, Any]]:
+    data = payload.get("data") or {}
+    if payload.get("code") != 10000:
+        return []
+    if str(data.get("contract", "")).lower() != eastmoney_contract_code(contract):
+        return []
+    reported_date = str(data.get("tradeDate", "")).replace("-", "")
+    if reported_date != trade_date.strftime("%Y%m%d"):
+        return []
+
+    book: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"long_position": 0, "long_change": 0, "short_position": 0, "short_change": 0}
+    )
+    for item in data.get("longInfoList") or []:
+        broker = clean_broker(item.get("futureCompanyName"))
+        if broker:
+            book[broker]["long_position"] += to_int(item.get("longNum"))
+            book[broker]["long_change"] += to_int(item.get("longChange"))
+    for item in data.get("shortInfoList") or []:
+        broker = clean_broker(item.get("futureCompanyName"))
+        if broker:
+            book[broker]["short_position"] += to_int(item.get("shortNum"))
+            book[broker]["short_change"] += to_int(item.get("shortChange"))
+
+    ranked = sorted(book.items(), key=lambda item: item[1]["long_position"] + item[1]["short_position"], reverse=True)
+    return [
+        {"date": trade_date.isoformat(), "symbol": contract.upper(), "broker": broker, "rank": rank, **values}
+        for rank, (broker, values) in enumerate(ranked, start=1)
+    ]
+
+
+def fetch_eastmoney_contract_positions(contract: str, trade_date: date) -> list[dict[str, Any]]:
+    root = root_symbol(contract)
+    exchange = SYMBOL_EXCHANGE.get(root)
+    if not exchange or exchange not in MARKET_IDS:
+        raise ValueError(f"Unsupported contract: {contract}")
+    endpoint = "https://qhhqzl.eastmoney.com/marketFutuWeb/dragonAndTigerInfo/getLongAndShortPosition"
+    params = {
+        "date": trade_date.strftime("%Y%m%d"),
+        "contract": eastmoney_contract_code(contract),
+        "market": MARKET_IDS[exchange],
+    }
+    response = requests.get(
+        endpoint,
+        params=params,
+        timeout=30,
+        headers={"Referer": f"https://qhweb.eastmoney.com/lhb/dkcc/{exchange.lower()}/{params['contract']}", "User-Agent": "Mozilla/5.0"},
+    )
+    response.raise_for_status()
+    return normalize_eastmoney_contract_payload(response.json(), contract, trade_date)
+
+
 def fetch_positions(symbols: list[str], days: list[date], source: str = "auto") -> list[dict[str, Any]]:
     import akshare as ak
+
+    exact_contracts = [symbol.upper() for symbol in symbols if is_contract_code(symbol)]
+    if exact_contracts and len(exact_contracts) != len(symbols):
+        raise ValueError("Do not mix exact contract codes and variety codes in one fetch")
+
+    if exact_contracts:
+        all_rows: list[dict[str, Any]] = []
+        for trade_date in days:
+            for contract in exact_contracts:
+                try:
+                    rows = fetch_eastmoney_contract_positions(contract, trade_date)
+                except Exception as exc:
+                    print(f"[warn] {contract} {trade_date}: {exc}", flush=True)
+                    rows = []
+                if rows:
+                    all_rows.extend(rows)
+                    print(f"[info] {contract} {trade_date}: {len(rows)} seats", flush=True)
+                else:
+                    print(f"[info] no contract-level leaderboard for {contract} {trade_date}", flush=True)
+        return sorted(all_rows, key=lambda row: (row["date"], row["symbol"], row["rank"]))
 
     all_rows: list[dict[str, Any]] = []
     symbols_by_exchange: dict[str, list[str]] = defaultdict(list)
@@ -387,7 +504,7 @@ def main() -> None:
     parser.add_argument("--date", help="Single trade date, e.g. 20260904")
     parser.add_argument("--start", help="Start trade date, e.g. 20260901")
     parser.add_argument("--end", help="End trade date, e.g. 20260904")
-    parser.add_argument("--symbols", nargs="+", default=list(SYMBOL_EXCHANGE.keys()), help="Variety symbols, e.g. RB CU M Y")
+    parser.add_argument("--symbols", nargs="+", default=DEFAULT_CONTRACTS, help="Exact futures contracts, e.g. P2701 RB2610")
     parser.add_argument("--output", type=Path, default=Path("../../data/real_positions.csv"))
     parser.add_argument("--import-db", action="store_true", help="Import CSV into raw_positions and rebuild position_features after fetching.")
     parser.add_argument("--source", choices=["auto", "eastmoney"], default="auto")
@@ -406,7 +523,11 @@ def main() -> None:
     write_csv(rows, args.output)
     print(f"Wrote {len(rows)} rows to {args.output}")
     if args.import_db:
-        import_and_compute(args.output, symbols, args.replace_symbols)
+        available_symbols = sorted({row["symbol"] for row in rows})
+        if available_symbols:
+            import_and_compute(args.output, available_symbols, args.replace_symbols)
+        else:
+            print("No contract-level rows to import; database unchanged", flush=True)
 
 
 if __name__ == "__main__":
