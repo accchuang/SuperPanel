@@ -16,6 +16,11 @@ export const TRADING_SESSION_BACKGROUND_COLORS = {
   day: "rgba(195, 235, 255, 0.25)",
 } as const;
 
+export type TradingSessionBackgroundColors = {
+  night: string;
+  day: string;
+};
+
 export class TradingSessionBackground implements ISeriesPrimitive<Time> {
   private chart: IChartApi | null = null;
   private requestUpdate: (() => void) | null = null;
@@ -23,9 +28,11 @@ export class TradingSessionBackground implements ISeriesPrimitive<Time> {
   private timeframe: MarketTimeframe;
   private readonly renderer: IPrimitivePaneRenderer;
   private readonly views: IPrimitivePaneView[];
+  private colors: TradingSessionBackgroundColors;
 
-  constructor(timeframe: MarketTimeframe) {
+  constructor(timeframe: MarketTimeframe, colors: TradingSessionBackgroundColors = TRADING_SESSION_BACKGROUND_COLORS) {
     this.timeframe = timeframe;
+    this.colors = colors;
     this.renderer = {
       draw: () => undefined,
       drawBackground: (target) => this.drawBackground(target),
@@ -36,6 +43,11 @@ export class TradingSessionBackground implements ISeriesPrimitive<Time> {
   setSpans(spans: TradingSessionSpan[], timeframe = this.timeframe) {
     this.spans = spans;
     this.timeframe = timeframe;
+    this.requestUpdate?.();
+  }
+
+  setColors(colors: TradingSessionBackgroundColors) {
+    this.colors = colors;
     this.requestUpdate?.();
   }
 
@@ -68,7 +80,7 @@ export class TradingSessionBackground implements ISeriesPrimitive<Time> {
         const left = Math.max(0, Math.min(start, end) - barWidth);
         const right = Math.min(mediaSize.width, Math.max(start, end) + barWidth);
         if (right <= left) continue;
-        context.fillStyle = TRADING_SESSION_BACKGROUND_COLORS[span.kind];
+        context.fillStyle = this.colors[span.kind];
         context.fillRect(left, 0, right - left, mediaSize.height);
       }
     });

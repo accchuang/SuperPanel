@@ -186,7 +186,29 @@ class LiveMarketTests(unittest.TestCase):
         self.assertGreaterEqual(len(result["bars"]), 60)
         self.assertGreaterEqual(TIMEFRAMES["1d"]["data_length"], 70)
 
-    def test_three_day_terminal_uses_native_bars_with_ma60_history(self):
+    def test_terminal_quote_keeps_the_latest_one_hundred_eighty_bars(self):
+        start = datetime(2026, 1, 1, 9, 0)
+        rows = [
+            {
+                "datetime": (start + timedelta(days=index)).timestamp() * 1_000_000_000,
+                "open": 8000 + index,
+                "high": 8010 + index,
+                "low": 7990 + index,
+                "close": 8005 + index,
+                "close_oi": 100_000 + index,
+                "volume": 1000 + index,
+            }
+            for index in range(220)
+        ]
+        quote = SimpleNamespace(last_price=8224, pre_close=8223, volume=1219, open_interest=100219, datetime="2026-08-08 09:00:00")
+
+        result = build_market_quote(LIVE_INSTRUMENTS[0], FakeSerial(rows), quote, "1d")
+
+        self.assertEqual(len(result["bars"]), 180)
+        self.assertEqual(result["bars"][0]["open"], 8040)
+        self.assertEqual(result["bars"][-1]["close"], 8224)
+
+    def test_three_day_terminal_uses_native_bars_without_downsampling(self):
         start = datetime(2026, 1, 1, 9, 0)
         rows = [
             {

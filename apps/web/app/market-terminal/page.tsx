@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -16,19 +16,21 @@ import {
   type LogicalRange,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { Archive, ArrowLeftRight, CandlestickChart, CircleAlert, PanelRightClose, PanelRightOpen, RefreshCw, Search, Save, Wifi, WifiOff } from "lucide-react";
+import { Archive, ArrowLeftRight, CandlestickChart, CircleAlert, Moon, PanelRightClose, PanelRightOpen, RefreshCw, Search, Save, Sun, Wifi, WifiOff } from "lucide-react";
 import { api, type LeaderboardRow, type LiveQuote, type MarketTimeframe, type TerminalQuote, type WatchlistQuote } from "@/lib/api";
 import { resolveTerminalPreferences, TERMINAL_PREFERENCES_KEY, type SubchartMode } from "@/lib/terminal-preferences";
 import { terminalChartTime, type ChartTime } from "@/lib/terminal-time";
 import { buildTradingSessionSpans } from "@/lib/trading-sessions";
-import { TradingSessionBackground, TRADING_SESSION_BACKGROUND_COLORS } from "@/lib/trading-session-background";
+import { TradingSessionBackground } from "@/lib/trading-session-background";
 import { buildBarExtremeMarkers, rankRecentBarExtremes, rankRecentOpenInterestChanges, type RankedBarExtreme } from "@/lib/bar-extremes";
+import { buildChannelSwingPath } from "@/lib/channel-swings";
 import { formatNumber } from "@/lib/utils";
 import { terminalQuoteMode } from "@/lib/terminal-research";
 import { resolveTerminalLayouts, TERMINAL_LAYOUTS_KEY, type TerminalLayout } from "@/lib/terminal-workspace";
 import { terminalStatusTooltip } from "@/lib/terminal-subchart";
 import { netPositionBarValues } from "@/lib/leaderboard-visuals";
-import { leaderboardContractCode } from "@/lib/leaderboard-contract";
+import { leaderboardContractCode, leaderboardLookupSymbols } from "@/lib/leaderboard-contract";
+import { resolveTerminalTheme, TERMINAL_THEME_KEY, terminalChartPalette, terminalUiPalette, type TerminalTheme } from "@/lib/terminal-theme";
 
 const CONTRACTS = [
   { contract: "P2701", name: "棕榈油", exchange: "DCE", sector: "油脂油料" },
@@ -58,16 +60,6 @@ const TIMEFRAMES: { value: MarketTimeframe; label: string }[] = [
   { value: "3d", label: "3 日 K" },
 ];
 
-const CHART_BACKGROUND = "#FFFFFF";
-const CHART_GRID = "#EDF0F2";
-const CHART_TEXT = "#687582";
-const CHART_BORDER = "#D8E0E6";
-const UP = "#E8EFF2";
-const DOWN = "#87949B";
-const BREAKOUT_UP = "#4F7180";
-const BREAKOUT_DOWN = "#4F5A61";
-const SUBCHART_UP = "#78929E";
-const SUBCHART_DOWN = "#B5AEA3";
 const NET_POSITION_COLOR = "#76BFA1";
 const NET_POSITION_INCREASE = "#D94727";
 const NET_POSITION_DECREASE = "#35A04C";
@@ -77,23 +69,23 @@ function signed(value: number | null, digits = 2) {
   return `${value > 0 ? "+" : ""}${value.toFixed(digits)}`;
 }
 
-function chartOptions(height: number, showTimeScale = true) {
+function chartOptions(height: number, palette: ReturnType<typeof terminalChartPalette>, showTimeScale = true) {
   return {
     width: 0,
     height,
     layout: {
-      background: { type: ColorType.Solid, color: CHART_BACKGROUND },
-      textColor: CHART_TEXT,
+      background: { type: ColorType.Solid, color: palette.background },
+      textColor: palette.text,
       fontFamily: "Arial, sans-serif",
       attributionLogo: false,
     },
     grid: {
-      vertLines: { color: CHART_GRID },
-      horzLines: { color: CHART_GRID },
+      vertLines: { color: palette.grid },
+      horzLines: { color: palette.grid },
     },
-    rightPriceScale: { borderColor: CHART_BORDER, scaleMargins: { top: 0.08, bottom: 0.08 } },
-    timeScale: { visible: showTimeScale, borderColor: CHART_BORDER, timeVisible: true, secondsVisible: false, rightOffset: 40 },
-    crosshair: { mode: CrosshairMode.Normal, vertLine: { color: "#95A0AA", width: 1, style: 2 }, horzLine: { color: "#95A0AA", width: 1, style: 2 } },
+    rightPriceScale: { borderColor: palette.border, scaleMargins: { top: 0.08, bottom: 0.08 } },
+    timeScale: { visible: showTimeScale, borderColor: palette.border, timeVisible: true, secondsVisible: false, rightOffset: 40 },
+    crosshair: { mode: CrosshairMode.Normal, vertLine: { color: palette.crosshair, width: 1, style: 2 }, horzLine: { color: palette.crosshair, width: 1, style: 2 } },
     handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
     handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
   } as const;
@@ -103,11 +95,10 @@ type ChartState = {
   priceChart: IChartApi;
   subchartChart: IChartApi;
   candleSeries: ISeriesApi<"Candlestick">;
-  ma20Series: ISeriesApi<"Line">;
-  ma60Series: ISeriesApi<"Line">;
   channelUpperSeries: ISeriesApi<"Line">;
   channelLowerSeries: ISeriesApi<"Line">;
   channelMiddleSeries: ISeriesApi<"Line">;
+  swingPathSeries: ISeriesApi<"Line">;
   subchartSeries: ISeriesApi<"Histogram">;
   extremeMarkers: ISeriesMarkersPluginApi<ChartTime>;
   subchartExtremeMarkers: ISeriesMarkersPluginApi<ChartTime>;
@@ -126,14 +117,6 @@ type CandlePoint = {
 };
 
 type ChannelLinePoint = { time: ChartTime; value: number };
-
-function movingAverage(candles: CandlePoint[], period: number) {
-  if (candles.length < period) return [];
-  return candles.slice(period - 1).map((candle, index) => ({
-    time: candle.time,
-    value: candles.slice(index, index + period).reduce((total, item) => total + item.close, 0) / period,
-  }));
-}
 
 function exponentialAverage(values: number[], period: number) {
   if (!values.length) return [];
@@ -163,23 +146,27 @@ function adaptiveChannel(candles: CandlePoint[]) {
       upper: { time: candle.time, value: upper } satisfies ChannelLinePoint,
       lower: { time: candle.time, value: lower } satisfies ChannelLinePoint,
       middle: { time: candle.time, value: (upper + lower) / 2 } satisfies ChannelLinePoint,
+      atr: averageTrueRange[index],
     };
   });
 }
 
 function TerminalCharts({
   quote,
+  theme,
   subchartMode,
   onSubchartModeChange,
   channelVisible,
   onChannelVisibleChange,
 }: {
   quote: LiveQuote;
+  theme: TerminalTheme;
   subchartMode: SubchartMode;
   onSubchartModeChange: (mode: SubchartMode) => void;
   channelVisible: boolean;
   onChannelVisibleChange: (visible: boolean) => void;
 }) {
+  const palette = terminalChartPalette(theme);
   const priceContainer = useRef<HTMLDivElement>(null);
   const subchartContainer = useRef<HTMLDivElement>(null);
   const state = useRef<ChartState | null>(null);
@@ -194,35 +181,21 @@ function TerminalCharts({
   useEffect(() => {
     if (!priceContainer.current || !subchartContainer.current) return;
     initialized.current = false;
-    const priceChart = createChart(priceContainer.current, chartOptions(priceContainer.current.clientHeight, false));
-    const subchartChart = createChart(subchartContainer.current, chartOptions(subchartContainer.current.clientHeight));
+    const priceChart = createChart(priceContainer.current, chartOptions(priceContainer.current.clientHeight, palette, false));
+    const subchartChart = createChart(subchartContainer.current, chartOptions(subchartContainer.current.clientHeight, palette));
     const candleSeries = priceChart.addSeries(CandlestickSeries, {
-      upColor: UP,
-      downColor: DOWN,
-      borderUpColor: "#6E8794",
-      borderDownColor: "#74818A",
-      wickUpColor: "#6E8794",
-      wickDownColor: "#74818A",
+      upColor: palette.candleUp,
+      downColor: palette.candleDown,
+      borderUpColor: palette.candleBorderUp,
+      borderDownColor: palette.candleBorderDown,
+      wickUpColor: palette.candleBorderUp,
+      wickDownColor: palette.candleBorderDown,
       priceLineVisible: true,
       lastValueVisible: true,
     });
     const extremeMarkers = createSeriesMarkers(candleSeries, [], { autoScale: false, zOrder: "aboveSeries" });
-    const ma20Series = priceChart.addSeries(LineSeries, {
-      color: "#B88947",
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: true,
-      crosshairMarkerVisible: false,
-    });
-    const ma60Series = priceChart.addSeries(LineSeries, {
-      color: "#817A9F",
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: true,
-      crosshairMarkerVisible: false,
-    });
     const channelUpperSeries = priceChart.addSeries(LineSeries, {
-      color: "#6F929A",
+      color: palette.channel,
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
@@ -230,7 +203,7 @@ function TerminalCharts({
       crosshairMarkerVisible: false,
     });
     const channelLowerSeries = priceChart.addSeries(LineSeries, {
-      color: "#6F929A",
+      color: palette.channel,
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
@@ -238,9 +211,16 @@ function TerminalCharts({
       crosshairMarkerVisible: false,
     });
     const channelMiddleSeries = priceChart.addSeries(LineSeries, {
-      color: "#ADB8BE",
+      color: palette.channelMiddle,
       lineWidth: 1,
       lineStyle: LineStyle.Dotted,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    const swingPathSeries = priceChart.addSeries(LineSeries, {
+      color: palette.swingPath,
+      lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
@@ -252,19 +232,18 @@ function TerminalCharts({
       base: 0,
     });
     const subchartExtremeMarkers = createSeriesMarkers(subchartSeries, [], { autoScale: false, zOrder: "aboveSeries" });
-    const priceSessionBackground = new TradingSessionBackground("15m");
-    const subchartSessionBackground = new TradingSessionBackground("15m");
+    const priceSessionBackground = new TradingSessionBackground("15m", palette.sessionBackground);
+    const subchartSessionBackground = new TradingSessionBackground("15m", palette.sessionBackground);
     candleSeries.attachPrimitive(priceSessionBackground);
     subchartSeries.attachPrimitive(subchartSessionBackground);
     state.current = {
       priceChart,
       subchartChart,
       candleSeries,
-      ma20Series,
-      ma60Series,
       channelUpperSeries,
       channelLowerSeries,
       channelMiddleSeries,
+      swingPathSeries,
       subchartSeries,
       extremeMarkers,
       subchartExtremeMarkers,
@@ -340,7 +319,7 @@ function TerminalCharts({
           time,
           position: marker.kind === "volume" ? "aboveBar" as const : "belowBar" as const,
           shape: "circle" as const,
-          color: marker.kind === "volume" ? "#365F72" : "#916526",
+          color: marker.kind === "volume" ? palette.markerVolume : palette.markerEntity,
           size: 1.5,
         },
       ];
@@ -354,7 +333,7 @@ function TerminalCharts({
         time,
         position: "aboveBar" as const,
         shape: marker.change >= 0 ? "arrowUp" as const : "arrowDown" as const,
-        color: marker.change >= 0 ? "#365F72" : "#805A3D",
+        color: marker.change >= 0 ? palette.markerOiUp : palette.markerOiDown,
         size: 1.5,
       }];
     }));
@@ -374,17 +353,22 @@ function TerminalCharts({
         close,
       }];
     });
-    const ma20 = movingAverage(candles, 20);
-    const ma60 = movingAverage(candles, 60);
     const channel = adaptiveChannel(candles);
+    const swingPath = channelVisible
+      ? buildChannelSwingPath(candles, channel.map((point) => ({
+          upper: point.upper.value,
+          lower: point.lower.value,
+          atr: point.atr,
+        }))).map(({ time, value }) => ({ time, value }))
+      : [];
     const highlightedCandles = channelVisible
       ? candles.map((candle, index) => {
           const bounds = channel[index];
           if (candle.close > bounds.upper.value && candle.close > candle.open) {
-            return { ...candle, borderColor: BREAKOUT_UP, wickColor: BREAKOUT_UP };
+            return { ...candle, borderColor: palette.breakoutUp, wickColor: palette.breakoutUp };
           }
           if (candle.close < bounds.lower.value && candle.close < candle.open) {
-            return { ...candle, borderColor: BREAKOUT_DOWN, wickColor: BREAKOUT_DOWN };
+            return { ...candle, borderColor: palette.breakoutDown, wickColor: palette.breakoutDown };
           }
           return candle;
         })
@@ -394,21 +378,20 @@ function TerminalCharts({
       if (time == null) return [];
       if (subchartMode === "oi") {
         const value = bar.oi_change ?? 0;
-        return [{ time, value, color: value >= 0 ? SUBCHART_UP : SUBCHART_DOWN }];
+        return [{ time, value, color: value >= 0 ? palette.subchartUp : palette.subchartDown }];
       }
       const value = bar.volume ?? 0;
       const isUpCandle = bar.close >= (bar.open ?? bar.close);
-      return [{ time, value, color: isUpCandle ? SUBCHART_UP : SUBCHART_DOWN }];
+      return [{ time, value, color: isUpCandle ? palette.subchartUp : palette.subchartDown }];
     });
     current.candleSeries.setData(highlightedCandles);
-    current.ma20Series.setData(ma20);
-    current.ma60Series.setData(ma60);
     current.channelUpperSeries.setData(channelVisible ? channel.map((point) => point.upper) : []);
     current.channelLowerSeries.setData(channelVisible ? channel.map((point) => point.lower) : []);
     current.channelMiddleSeries.setData(channelVisible ? channel.map((point) => point.middle) : []);
+    current.swingPathSeries.setData(swingPath);
     current.subchartSeries.setData(subchart);
     if (!initialized.current && candles.length) {
-      const visibleBars = Math.min(candles.length, 40);
+      const visibleBars = Math.min(candles.length, 180);
       const rightPadding = visibleBars;
       current.priceChart.timeScale().setVisibleLogicalRange({
         from: candles.length - visibleBars - 0.5,
@@ -426,28 +409,27 @@ function TerminalCharts({
             <span>价格 / K线</span>
             <span className="inline-flex items-center gap-1.5 text-[10px]">
               <span>近45根</span>
-              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-full bg-[#365F72]" />量</span>
-              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-full bg-[#916526]" />实体</span>
+              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: palette.markerVolume }} />量</span>
+              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: palette.markerEntity }} />实体</span>
             </span>
           </span>
           <span className="flex items-center gap-2">
             <button
               type="button"
               aria-pressed={channelVisible}
-              title="EMA(最高/最低, 45) ± EMA(TR, 60) × 1.5；突破K线加亮边框"
+              title="EMA(最高/最低, 45) ± EMA(TR, 60) × 1.5；距上下轨 1×ATR 内视为触及，并连接交替极值"
               onClick={() => onChannelVisibleChange(!channelVisible)}
               className={`inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors ${channelVisible ? "text-[#5E828C] hover:bg-[#EEF3F5]" : "text-[#9AA4AD] hover:bg-[#F0F2F4] hover:text-[#596570]"}`}
             >
               <i className={`inline-block h-px w-3 border-t border-dashed ${channelVisible ? "border-[#6F929A]" : "border-[#AAB3BA]"}`} />
               ATR通道
             </button>
-            <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#B88947]" />MA20</span>
-            <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[#817A9F]" />MA60</span>
+            <span><i className="mr-1 inline-block h-px w-3 align-middle" style={{ backgroundColor: palette.swingPath }} />通道轨迹</span>
             {quote.timeframe !== "1d" && quote.timeframe !== "3d" && <>
-              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-sm ring-1 ring-[#DFE6E9]" style={{ backgroundColor: TRADING_SESSION_BACKGROUND_COLORS.night }} />夜盘</span>
-              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-sm ring-1 ring-[#ECE7DB]" style={{ backgroundColor: TRADING_SESSION_BACKGROUND_COLORS.day }} />日盘</span>
+              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-sm ring-1 ring-[#DFE6E9]" style={{ backgroundColor: palette.sessionBackground.night }} />夜盘</span>
+              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-sm ring-1 ring-[#ECE7DB]" style={{ backgroundColor: palette.sessionBackground.day }} />日盘</span>
             </>}
-            <span className="hidden sm:inline">浅色涨 · 灰蓝跌</span>
+            <span className="hidden sm:inline">青绿涨 · 珊瑚红跌</span>
           </span>
         </div>
         <div className="relative min-h-0 w-full flex-1">
@@ -496,7 +478,7 @@ function TerminalChartLoading({ subchartMode }: { subchartMode: SubchartMode }) 
   return (
     <div className="flex h-full min-h-0 flex-col gap-1.5">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-[#DDE3E8] bg-white">
-        <div className="flex h-7 shrink-0 items-center border-b border-[#E5E9ED] bg-[#FCFDFE] px-2 text-[11px] text-[#75818C]"><span>价格 / K线 · MA20 / MA60</span></div>
+        <div className="flex h-7 shrink-0 items-center border-b border-[#E5E9ED] bg-[#FCFDFE] px-2 text-[11px] text-[#75818C]"><span>价格 / K线 · ATR 通道 · 通道轨迹</span></div>
         <div className="grid min-h-0 flex-1 place-items-center text-xs text-[#8B96A0]">正在读取 K 线…</div>
       </div>
       <div className="flex h-[19%] min-h-[88px] max-h-[152px] shrink-0 flex-col overflow-hidden rounded border border-[#DDE3E8] bg-white">
@@ -519,7 +501,7 @@ function TerminalContextPanel({ contract }: {
   contract: string;
 }) {
   const contractCode = leaderboardContractCode(contract);
-  const [leaderboard, setLeaderboard] = useState<{ symbol: string; date: string | null; rows: LeaderboardRow[] } | null>(null);
+  const [leaderboard, setLeaderboard] = useState<{ symbol: string; dataSymbol: string | null; date: string | null; rows: LeaderboardRow[] } | null>(null);
   const [leaderboardLoading, setLeaderboardLoading] = useState(true);
   const [leaderboardError, setLeaderboardError] = useState(false);
 
@@ -527,20 +509,23 @@ function TerminalContextPanel({ contract }: {
     let active = true;
     setLeaderboardLoading(true);
     setLeaderboardError(false);
-    if (!contractCode) {
+    const lookupSymbols = leaderboardLookupSymbols(contract);
+    if (!contractCode || !lookupSymbols.length) {
       setLeaderboard(null);
       setLeaderboardLoading(false);
       return () => { active = false; };
     }
     const load = async () => {
       try {
-        const dates = await api.dates(contractCode);
-        if (!dates.latest) {
-          if (active) setLeaderboard({ symbol: contractCode, date: null, rows: [] });
+        for (const symbol of lookupSymbols) {
+          const dates = await api.dates(symbol);
+          if (!dates.latest) continue;
+          const rows = await api.leaderboard(symbol, dates.latest);
+          if (!rows.length && symbol !== lookupSymbols.at(-1)) continue;
+          if (active) setLeaderboard({ symbol: contractCode, dataSymbol: symbol, date: dates.latest, rows });
           return;
         }
-        const rows = await api.leaderboard(contractCode, dates.latest);
-        if (active) setLeaderboard({ symbol: contractCode, date: dates.latest, rows });
+        if (active) setLeaderboard({ symbol: contractCode, dataSymbol: null, date: null, rows: [] });
       } catch {
         if (active) {
           setLeaderboard(null);
@@ -555,6 +540,9 @@ function TerminalContextPanel({ contract }: {
   }, [contractCode]);
 
   const currentLeaderboard = leaderboard?.symbol === contractCode ? leaderboard : null;
+  const dataScope = currentLeaderboard?.dataSymbol && currentLeaderboard.dataSymbol !== contractCode
+    ? `${contractCode} · ${currentLeaderboard.dataSymbol} 品种级回退`
+    : `${contractCode ?? contract} 合约级`;
   const longSeats = (currentLeaderboard?.rows ?? [])
     .filter((row) => row.net_position > 0)
     .sort((left, right) => right.net_position - left.net_position)
@@ -573,22 +561,22 @@ function TerminalContextPanel({ contract }: {
       {rows.length ? <ol className="grid gap-1">{rows.map((row, index) => {
         const values = netPositionBarValues(row.net_position, row.net_change);
         const changeColor = values.change > 0 ? NET_POSITION_INCREASE : values.change < 0 ? NET_POSITION_DECREASE : "#AEB8BD";
-        return <li key={row.broker} className="relative flex h-7 items-center overflow-hidden rounded-sm border border-[#E7ECEF] bg-[#FBFCFD] px-2">
+        return <li key={row.broker} className="terminal-leaderboard-row relative flex h-7 items-center overflow-hidden rounded-sm border border-[#E7ECEF] bg-[#FBFCFD] px-2">
         <span aria-hidden="true" className="absolute inset-y-0 left-0 right-0 flex">
-          <span style={{ width: `${values.position / maxValue * 100}%`, backgroundColor: NET_POSITION_COLOR }} />
-          {values.change !== 0 && <span className="min-w-[2px]" style={{ width: `${Math.abs(values.change) / maxValue * 100}%`, backgroundColor: changeColor }} />}
+          <span className="terminal-leaderboard-position-bar" style={{ width: `${values.position / maxValue * 100}%`, backgroundColor: NET_POSITION_COLOR }} />
+          {values.change !== 0 && <span className={`terminal-leaderboard-change-bar min-w-[2px] ${values.change > 0 ? "terminal-leaderboard-change-increase" : "terminal-leaderboard-change-decrease"}`} style={{ width: `${Math.abs(values.change) / maxValue * 100}%`, backgroundColor: changeColor }} />}
         </span>
         <span className="relative flex min-w-0 flex-1 items-center justify-between gap-1 text-[10px]">
-          <span className="truncate text-[#53616C]">{index + 1}. {row.broker}</span>
-          <span className="shrink-0 font-mono font-medium" title={`净持仓 ${formatNumber(values.position)}，${values.change > 0 ? "增加" : values.change < 0 ? "减少" : "持平"} ${formatNumber(Math.abs(values.change))}`}><span className="text-[#537565]">{formatNumber(values.position)}</span><span className={`ml-0.5 ${values.change > 0 ? "text-[#C5442B]" : values.change < 0 ? "text-[#31864A]" : "text-[#7F8A90]"}`}>/{signed(values.change, 0)}</span></span>
+          <span className="terminal-leaderboard-broker truncate text-[#53616C]">{index + 1}. {row.broker}</span>
+          <span className="shrink-0 font-mono font-medium" title={`净持仓 ${formatNumber(values.position)}，${values.change > 0 ? "增加" : values.change < 0 ? "减少" : "持平"} ${formatNumber(Math.abs(values.change))}`}><span className="terminal-leaderboard-value text-[#537565]">{formatNumber(values.position)}</span><span className={`terminal-leaderboard-change ml-0.5 ${values.change > 0 ? "terminal-leaderboard-change-increase text-[#C5442B]" : values.change < 0 ? "terminal-leaderboard-change-decrease text-[#31864A]" : "text-[#7F8A90]"}`}>/{signed(values.change, 0)}</span></span>
         </span>
       </li>})}</ol> : <p className="py-2 text-center text-[10px] text-[#98A2AA]">暂无上榜席位</p>}
     </section>;
   };
 
-  return <aside aria-label="关键信息" className="flex h-full w-[252px] shrink-0 flex-col overflow-y-auto border-l border-[#E2E7EC] bg-white px-3 py-2.5">
-    <div className="flex items-start justify-between gap-1 border-b border-[#E7ECEF] pb-2"><div><h2 className="text-xs font-semibold text-[#344652]">龙虎榜净持仓</h2><div className="mt-0.5 text-[10px] text-[#87939D]">{contractCode ?? contract} 合约级</div></div><span className="text-right text-[9px] leading-4 text-[#9AA5AD]">数据日期<br />{currentLeaderboard?.date ?? "--"}</span></div>
-    <div className="flex items-center justify-end gap-1.5 border-b border-[#E7ECEF] py-1 text-[9px] text-[#87939D]"><span>净持仓</span><i aria-hidden="true" className="h-2 w-2 rounded-sm bg-[#76BFA1]" /><span>增加</span><i aria-hidden="true" className="h-2 w-2 rounded-sm bg-[#D94727]" /><span>减少</span><i aria-hidden="true" className="h-2 w-2 rounded-sm bg-[#35A04C]" /></div>
+  return <aside aria-label="关键信息" className="terminal-leaderboard flex h-full w-[252px] shrink-0 flex-col overflow-y-auto border-l border-[#E2E7EC] bg-white px-3 py-2.5">
+    <div className="flex items-start justify-between gap-1 border-b border-[#E7ECEF] pb-2"><div><h2 className="text-xs font-semibold text-[#344652]">龙虎榜净持仓</h2><div className="mt-0.5 text-[10px] text-[#87939D]">{dataScope}</div></div><span className="text-right text-[9px] leading-4 text-[#9AA5AD]">数据日期<br />{currentLeaderboard?.date ?? "--"}</span></div>
+    <div className="flex items-center justify-end gap-1.5 border-b border-[#E7ECEF] py-1 text-[9px] text-[#87939D]"><span>净持仓</span><i aria-hidden="true" className="terminal-leaderboard-position-bar h-2 w-2 rounded-sm bg-[#76BFA1]" /><span>增加</span><i aria-hidden="true" className="terminal-leaderboard-change-increase h-2 w-2 rounded-sm bg-[#D94727]" /><span>减少</span><i aria-hidden="true" className="terminal-leaderboard-change-decrease h-2 w-2 rounded-sm bg-[#35A04C]" /></div>
       {(leaderboardLoading || (!currentLeaderboard && !leaderboardError)) ? <p className="py-5 text-center text-[10px] text-[#98A2AA]">正在读取龙虎榜…</p> : leaderboardError ? <p className="py-5 text-center text-[10px] text-[#98A2AA]">龙虎榜数据暂不可用</p> : !currentLeaderboard?.rows.length ? <p className="py-5 text-center text-[10px] text-[#98A2AA]">该品种暂无已收录数据</p> : <>
         <div className="min-h-0 flex-1 overflow-y-auto pt-1">
           {renderLadder("多头榜 · 净多席位", longSeats, maxLong)}
@@ -603,6 +591,25 @@ export default function MarketTerminalPage() {
   const [contract, setContract] = useState("P2701");
   const [timeframe, setTimeframe] = useState<MarketTimeframe>("1d");
   const [subchartMode, setSubchartMode] = useState<SubchartMode>("oi");
+  const [theme, setTheme] = useState<TerminalTheme>("light");
+  const uiPalette = terminalUiPalette(theme);
+  const terminalSurfaceStyle = {
+    "--terminal-watchlist-surface": uiPalette.watchlistSurface,
+    "--terminal-watchlist-section": uiPalette.watchlistSection,
+    "--terminal-watchlist-border": uiPalette.watchlistBorder,
+    "--terminal-watchlist-divider": uiPalette.watchlistDivider,
+    "--terminal-watchlist-active": uiPalette.watchlistActive,
+    "--terminal-watchlist-indicator": uiPalette.watchlistIndicator,
+    "--terminal-leaderboard-surface": uiPalette.leaderboardSurface,
+    "--terminal-leaderboard-row": uiPalette.leaderboardRow,
+    "--terminal-leaderboard-border": uiPalette.leaderboardBorder,
+    "--terminal-leaderboard-position": uiPalette.leaderboardPosition,
+    "--terminal-leaderboard-increase": uiPalette.leaderboardIncrease,
+    "--terminal-leaderboard-decrease": uiPalette.leaderboardDecrease,
+    "--terminal-leaderboard-text": uiPalette.leaderboardText,
+    "--terminal-leaderboard-value": uiPalette.leaderboardValue,
+  } as CSSProperties;
+  const [themeReady, setThemeReady] = useState(false);
   const [channelVisible, setChannelVisible] = useState(true);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [snapshot, setSnapshot] = useState<TerminalQuote | null>(null);
@@ -675,6 +682,33 @@ export default function MarketTerminalPage() {
     setSubchartMode(preferences.subchartMode);
     setPreferencesReady(true);
   }, []);
+
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = window.localStorage.getItem(TERMINAL_THEME_KEY);
+    } catch {
+      // Private browsing or disabled storage keeps the terminal usable with the light theme.
+    }
+    setTheme(resolveTerminalTheme(saved));
+    setThemeReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!themeReady) return;
+    try {
+      window.localStorage.setItem(TERMINAL_THEME_KEY, theme);
+    } catch {
+      // The terminal can still operate without browser persistence.
+    }
+  }, [theme, themeReady]);
+
+  useEffect(() => {
+    document.documentElement.dataset.marketTerminalTheme = theme;
+    return () => {
+      delete document.documentElement.dataset.marketTerminalTheme;
+    };
+  }, [theme]);
 
   useEffect(() => {
     if (!preferencesReady) return;
@@ -781,9 +815,9 @@ export default function MarketTerminalPage() {
   };
 
   return (
-    <main className="h-full min-h-0 overflow-hidden bg-[#F5F6F7] text-[#253041]">
+    <main className={`terminal-theme terminal-theme-${theme} h-full min-h-0 overflow-hidden bg-[#F5F6F7] text-[#253041]`} style={terminalSurfaceStyle}>
       <div className="flex h-full min-h-0">
-        <aside className="flex h-full w-[230px] shrink-0 flex-col overflow-hidden border-r border-[#E2E7EC] bg-white">
+        <aside className="terminal-watchlist flex h-full w-[230px] shrink-0 flex-col overflow-hidden border-r border-[#E2E7EC] bg-white">
           <div className="shrink-0 border-b border-[#E2E7EC] px-3 py-3">
             <div className="flex items-center gap-2 text-sm font-semibold"><CandlestickChart size={17} className="text-[#6E8794]" />自选合约</div>
             <div className="mt-1 text-[11px] text-[#87939D]">行情终端 · TqSdk</div>
@@ -820,11 +854,11 @@ export default function MarketTerminalPage() {
                 <div className="min-w-0 text-base font-semibold text-[#253041]">{selected.name} <span className="ml-1 font-mono text-xs font-normal text-[#7A8792]">{selected.contract}</span></div>
                 {quote && <div className="flex shrink-0 items-baseline gap-1.5 border-l border-[#E0E5E9] pl-2"><span className="font-mono text-sm font-semibold text-[#253041]">{quote.last_price == null ? "--" : formatNumber(quote.last_price)}</span><span className={`font-mono text-[10px] ${quoteChange == null ? "text-[#7A8792]" : quoteChange >= 0 ? "text-[#6E8794]" : "text-[#9A9183]"}`}>{signed(quote.change)} {quoteChange == null ? "" : `(${signed(quoteChange)}%)`}</span></div>}
               </div>
-              <div className="flex shrink-0 items-center gap-1.5"><StatusBadge snapshot={activeSnapshot} /><button type="button" onClick={() => setCommandOpen(true)} className="inline-flex h-7 items-center gap-1.5 rounded border border-[#D6DDE2] px-2 text-[11px] text-[#65737E] hover:bg-[#F3F5F6] hover:text-[#34404C]"><Search size={13} /><span>搜索合约</span><kbd className="hidden rounded border border-[#E0E5E9] px-1 text-[9px] text-[#8B969F] lg:inline">⌘K</kbd></button><button type="button" aria-label={contextVisible ? "收起关键数据" : "展开关键数据"} title={contextVisible ? "收起关键数据" : "展开关键数据"} onClick={() => setContextVisible((value) => !value)} className="grid h-7 w-7 shrink-0 place-items-center rounded border border-[#D6DDE2] text-[#72808B] hover:border-[#AEBAC2] hover:bg-[#F3F5F6] hover:text-[#34404C]">{contextVisible ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}</button><button type="button" aria-label="刷新行情" title="刷新行情" onClick={() => load(true)} disabled={refreshing} className="grid h-7 w-7 shrink-0 place-items-center rounded border border-[#D6DDE2] text-[#72808B] hover:border-[#AEBAC2] hover:bg-[#F3F5F6] hover:text-[#34404C] disabled:opacity-50"><RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /></button></div>
+              <div className="flex shrink-0 items-center gap-1.5"><StatusBadge snapshot={activeSnapshot} /><button type="button" onClick={() => setCommandOpen(true)} className="inline-flex h-7 items-center gap-1.5 rounded border border-[#D6DDE2] px-2 text-[11px] text-[#65737E] hover:bg-[#F3F5F6] hover:text-[#34404C]"><Search size={13} /><span>搜索合约</span><kbd className="hidden rounded border border-[#E0E5E9] px-1 text-[9px] text-[#8B969F] lg:inline">⌘K</kbd></button><button type="button" aria-label={theme === "dark" ? "切换浅色主题" : "切换深色主题"} title={theme === "dark" ? "切换浅色主题" : "切换深色主题"} aria-pressed={theme === "dark"} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")} className="grid h-7 w-7 shrink-0 place-items-center rounded border border-[#D6DDE2] text-[#72808B] hover:border-[#AEBAC2] hover:bg-[#F3F5F6] hover:text-[#34404C]"><span className="sr-only">{theme === "dark" ? "浅色主题" : "深色主题"}</span>{theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}</button><button type="button" aria-label={contextVisible ? "收起关键数据" : "展开关键数据"} title={contextVisible ? "收起关键数据" : "展开关键数据"} onClick={() => setContextVisible((value) => !value)} className="grid h-7 w-7 shrink-0 place-items-center rounded border border-[#D6DDE2] text-[#72808B] hover:border-[#AEBAC2] hover:bg-[#F3F5F6] hover:text-[#34404C]">{contextVisible ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}</button><button type="button" aria-label="刷新行情" title="刷新行情" onClick={() => load(true)} disabled={refreshing} className="grid h-7 w-7 shrink-0 place-items-center rounded border border-[#D6DDE2] text-[#72808B] hover:border-[#AEBAC2] hover:bg-[#F3F5F6] hover:text-[#34404C] disabled:opacity-50"><RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /></button></div>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-1">
               {TIMEFRAMES.map((item) => <button key={item.value} type="button" onClick={() => setTimeframe(item.value)} className={`rounded px-2.5 py-0.5 text-[11px] transition-colors ${timeframe === item.value ? "bg-[#DFE8EC] font-medium text-[#344F5A]" : "text-[#6F7C87] hover:bg-[#F0F3F5] hover:text-[#34404C]"}`}>{item.label}</button>)}
-              <span className="ml-auto hidden text-[11px] text-[#87939D] xl:block">主图 K 线 · MA20 / MA60 · 副图 OI / 成交量切换</span>
+              <span className="ml-auto hidden text-[11px] text-[#87939D] xl:block">主图 K 线 · ATR 通道 / 通道轨迹 · 副图 OI / 成交量切换</span>
               <div className="ml-auto flex items-center gap-1.5">
                 <select aria-label="载入已保存布局" value="" onChange={(event) => applyLayout(event.target.value)} className="h-7 max-w-[150px] rounded border border-[#D6DDE2] bg-white px-1.5 text-[10px] text-[#65737E]"><option value="">布局…</option>{layouts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
                 <input aria-label="布局名称" value={layoutName} onChange={(event) => setLayoutName(event.target.value)} maxLength={32} placeholder="布局名称" className="h-7 w-[92px] rounded border border-[#D6DDE2] px-1.5 text-[10px] text-[#53616D] placeholder:text-[#A6AFB6]" />
@@ -838,7 +872,7 @@ export default function MarketTerminalPage() {
             {activeSnapshot?.connection_error && <div role="status" className="mb-1 shrink-0 rounded border border-[#E9E0CD] bg-[#F8F5EC] px-3 py-1.5 text-[11px] text-[#927F55]">{activeSnapshot.connection_error}</div>}
             <div className="flex min-h-0 flex-1 gap-2 overflow-hidden">
               <div className="h-full min-h-0 min-w-0 flex-1">
-                {loading && !quote ? <TerminalChartLoading subchartMode={subchartMode} /> : quote ? <TerminalCharts key={`${contract}-${timeframe}`} quote={quote} subchartMode={subchartMode} onSubchartModeChange={setSubchartMode} channelVisible={channelVisible} onChannelVisibleChange={setChannelVisible} /> : <TerminalChartLoading subchartMode={subchartMode} />}
+                {loading && !quote ? <TerminalChartLoading subchartMode={subchartMode} /> : quote ? <TerminalCharts key={`${contract}-${timeframe}-${theme}`} theme={theme} quote={quote} subchartMode={subchartMode} onSubchartModeChange={setSubchartMode} channelVisible={channelVisible} onChannelVisibleChange={setChannelVisible} /> : <TerminalChartLoading subchartMode={subchartMode} />}
               </div>
               {contextVisible && <div className="h-full min-h-0 w-[252px] shrink-0 overflow-hidden rounded border border-[#DDE3E8] bg-white"><TerminalContextPanel contract={contract} /></div>}
             </div>

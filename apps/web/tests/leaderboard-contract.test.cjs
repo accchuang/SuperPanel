@@ -15,10 +15,17 @@ if (fs.existsSync(sourcePath)) {
   }).outputText;
   contractModule._compile(compiled, sourcePath);
 }
-const { leaderboardContractCode } = contractModule.exports;
+const { leaderboardContractCode, leaderboardLookupSymbols } = contractModule.exports;
 
 test("leaderboard lookup requires and preserves the complete contract code", () => {
   assert.equal(leaderboardContractCode("P2701"), "P2701");
   assert.equal(leaderboardContractCode("ma2610"), "MA2610");
   assert.equal(leaderboardContractCode("P"), null);
+});
+
+test("leaderboard lookup falls back from a contract to its variety code", () => {
+  assert.deepEqual(leaderboardLookupSymbols("P2701"), ["P2701", "P"]);
+  assert.deepEqual(leaderboardLookupSymbols("OI2701"), ["OI2701", "OI"]);
+  assert.deepEqual(leaderboardLookupSymbols("P"), []);
+  assert.deepEqual(leaderboardLookupSymbols("bad code"), []);
 });

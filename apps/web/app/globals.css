@@ -40,3 +40,187 @@ input {
 .number {
   font-variant-numeric: tabular-nums;
 }
+
+/* The market terminal keeps its dense light palette by default and scopes the
+   dark palette to the terminal route so the research dashboard stays unchanged. */
+.terminal-theme-dark {
+  color-scheme: dark;
+}
+
+.terminal-theme-dark [class*="bg-white"],
+.terminal-theme-dark [class*="bg-[#"] {
+  background-color: #111a24 !important;
+}
+
+.terminal-theme-dark [class*="bg-[#F5F6F7]"] { background-color: #0b1219 !important; }
+.terminal-theme-dark [class*="bg-[#FCFDFE]"] { background-color: #131d27 !important; }
+.terminal-theme-dark [class*="bg-[#FBFCFD]"] { background-color: #141f29 !important; }
+.terminal-theme-dark [class*="bg-[#F8FAFB]"] { background-color: #15222c !important; }
+.terminal-theme-dark [class*="bg-[#E8EFF2]"],
+.terminal-theme-dark [class*="bg-[#EAF0F2]"],
+.terminal-theme-dark [class*="bg-[#DFE8EC]"] { background-color: #203743 !important; }
+.terminal-theme-dark [class*="bg-[#F8F5EC]"] { background-color: #30291f !important; }
+.terminal-theme-dark [class*="bg-[#FBF6F5]"] { background-color: #30201f !important; }
+.terminal-theme-dark [class*="bg-[#F1F6F3]"] { background-color: #1b2c25 !important; }
+.terminal-theme-dark [class*="bg-[#F5F7F8]"],
+.terminal-theme-dark [class*="bg-[#F3F5F6]"],
+.terminal-theme-dark [class*="bg-[#F2F4F5]"] { background-color: #1a2732 !important; }
+
+.terminal-theme-dark [class*="hover:bg-[#"]:hover {
+  background-color: #1d2d3a !important;
+}
+
+.terminal-theme-dark [class*="border-[#"],
+.terminal-theme-dark [class*="divide-[#"],
+.terminal-theme-dark [class*="ring-[#"] {
+  border-color: #2a3a47 !important;
+}
+
+.terminal-theme-dark [class*="text-[#"] {
+  color: #909ea9 !important;
+}
+
+.terminal-theme-dark [class*="text-[#2"],
+.terminal-theme-dark [class*="text-[#3"],
+.terminal-theme-dark [class*="text-[#4"],
+.terminal-theme-dark [class*="text-[#5"] {
+  color: #adb8c1 !important;
+}
+
+.terminal-theme-dark [class*="text-[#7"],
+.terminal-theme-dark [class*="text-[#8"],
+.terminal-theme-dark [class*="text-[#9"],
+.terminal-theme-dark [class*="text-[#A"] {
+  color: #788894 !important;
+}
+
+.terminal-theme-dark [class*="placeholder:text-[#"]::placeholder {
+  color: #697985 !important;
+}
+
+.terminal-theme-dark [class*="text-[#C5442B]"],
+.terminal-theme-dark [class*="text-[#D94727]"],
+.terminal-theme-dark [class*="text-[#966A66]"] { color: #d97873 !important; }
+.terminal-theme-dark [class*="text-[#31864A]"],
+.terminal-theme-dark [class*="text-[#35A04C]"],
+.terminal-theme-dark [class*="text-[#648271]"] { color: #54b3a7 !important; }
+.terminal-theme-dark [class*="text-[#927F55]"],
+.terminal-theme-dark [class*="text-[#805A3D]"] { color: #bda36c !important; }
+
+.terminal-theme-dark .terminal-watchlist {
+  background-color: var(--terminal-watchlist-surface) !important;
+  border-color: var(--terminal-watchlist-border) !important;
+}
+
+.terminal-theme-dark .terminal-watchlist [class*="border-[#"] {
+  border-color: var(--terminal-watchlist-border) !important;
+}
+
+.terminal-theme-dark .terminal-watchlist [class*="divide-[#"] {
+  border-color: var(--terminal-watchlist-divider) !important;
+}
+
+.terminal-theme-dark .terminal-watchlist [class*="bg-[#F8FAFB]"] {
+  background-color: var(--terminal-watchlist-section) !important;
+}
+
+.terminal-theme-dark .terminal-watchlist [class*="bg-[#E8EFF2]"] {
+  background-color: var(--terminal-watchlist-active) !important;
+}
+
+.terminal-theme-dark .terminal-watchlist [class*="border-[#6F929A]"] {
+  border-left-color: var(--terminal-watchlist-indicator) !important;
+}
+
+.terminal-theme-dark .terminal-watchlist [class*="hover:bg-[#"]:hover {
+  background-color: #16242d !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard {
+  background-color: var(--terminal-leaderboard-surface) !important;
+  border-color: var(--terminal-leaderboard-border) !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard [class*="border-[#"] {
+  border-color: var(--terminal-leaderboard-border) !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard-row {
+  background-color: var(--terminal-leaderboard-row) !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard-position-bar,
+.terminal-theme-dark .terminal-leaderboard i.terminal-leaderboard-position-bar {
+  background-color: var(--terminal-leaderboard-position) !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard-change-bar.terminal-leaderboard-change-increase,
+.terminal-theme-dark .terminal-leaderboard i.terminal-leaderboard-change-increase {
+  background-color: var(--terminal-leaderboard-increase) !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard-change-bar.terminal-leaderboard-change-decrease,
+.terminal-theme-dark .terminal-leaderboard i.terminal-leaderboard-change-decrease {
+  background-color: var(--terminal-leaderboard-decrease) !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard h2,
+.terminal-theme-dark .terminal-leaderboard h3,
+.terminal-theme-dark .terminal-leaderboard-broker {
+  color: var(--terminal-leaderboard-text) !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard-broker,
+.terminal-theme-dark .terminal-leaderboard-value,
+.terminal-theme-dark .terminal-leaderboard-change {
+  text-shadow: 0 1px 1px rgb(7 15 21 / 70%);
+}
+
+.terminal-theme-dark .terminal-leaderboard-value {
+  color: var(--terminal-leaderboard-value) !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard-change-increase:not(i) {
+  color: #f2b3aa !important;
+}
+
+.terminal-theme-dark .terminal-leaderboard-change-decrease:not(i) {
+  color: #9bd5c1 !important;
+}
+
+.terminal-theme-dark > [class*="fixed"][class*="bg-[#253041]/25"] {
+  background-color: rgba(3, 8, 13, 0.78) !important;
+}
+
+html[data-market-terminal-theme="dark"] body {
+  background: #0b1219;
+}
+
+html[data-market-terminal-theme="dark"] .app-shell-terminal > aside {
+  border-color: #243441 !important;
+  background: #0d151e !important;
+  color: #adb8c1 !important;
+}
+
+html[data-market-terminal-theme="dark"] .app-shell-terminal > aside a {
+  color: #8999a5 !important;
+}
+
+html[data-market-terminal-theme="dark"] .app-shell-terminal > aside a[aria-current="page"] {
+  background: #203743 !important;
+  color: #c1cbd2 !important;
+}
+
+html[data-market-terminal-theme="dark"] .app-shell-terminal > aside button {
+  color: #8999a5 !important;
+}
+
+html[data-market-terminal-theme="dark"] .app-shell-terminal > aside button:hover {
+  background: #1b2b37 !important;
+  color: #c1cbd2 !important;
+}
+
+html[data-market-terminal-theme="dark"] .app-shell-terminal > aside > div:last-child {
+  border-color: #243441 !important;
+  color: #657784 !important;
+}

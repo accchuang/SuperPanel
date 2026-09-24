@@ -17,7 +17,7 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
   const [collapsed, setCollapsed] = useState(true);
 
   return (
-    <div className={`${isMarketTerminal ? "flex h-dvh min-h-0 flex-col overflow-hidden md:flex-row" : "min-h-screen md:flex"}`}>
+    <div className={`app-shell ${isMarketTerminal ? "app-shell-terminal flex h-dvh min-h-0 flex-col overflow-hidden md:flex-row" : "min-h-screen md:flex"}`}>
       <aside className={`w-full border-b transition-[width] duration-200 md:sticky md:top-0 md:h-screen md:shrink-0 md:border-b-0 md:border-r ${isMarketTerminal ? "border-[#E2E7EC] bg-white text-[#344054]" : "border-border bg-[#111114]"} ${collapsed ? "md:w-[72px]" : "md:w-60"}`}>
         <div className={`flex h-full flex-col py-2 md:py-6 ${collapsed ? "px-2" : "px-3 md:px-4"}`}>
           <div className={`flex items-center px-2 text-sm font-semibold ${collapsed ? "justify-between gap-1 md:justify-between" : "justify-between gap-2"}`}>

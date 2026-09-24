@@ -67,9 +67,11 @@ TIMEFRAMES = {
     "15m": {"seconds": 900, "label": "15 分钟", "data_length": 180},
     "30m": {"seconds": 1_800, "label": "30 分钟", "data_length": 900},
     "1h": {"seconds": 3_600, "label": "1 小时", "data_length": 500},
-    "1d": {"seconds": 86_400, "label": "日线", "data_length": 90},
-    "3d": {"seconds": 3 * 86_400, "label": "3 日 K", "data_length": 160},
+    "1d": {"seconds": 86_400, "label": "日线", "data_length": 180},
+    "3d": {"seconds": 3 * 86_400, "label": "3 日 K", "data_length": 180},
 }
+
+TERMINAL_BAR_COUNT = 180
 
 _lock = threading.Lock()
 _worker: subprocess.Popen[bytes] | None = None
@@ -262,11 +264,11 @@ def build_market_quote(
     instrument: dict[str, str], serial: Any, quote: Any, timeframe: str, *, daily_bar_limit: int | None = None
 ) -> dict[str, Any]:
     rows = [row for _, row in serial.iterrows() if finite_int(_row_value(row, "datetime"))]
-    history_days = 120 if timeframe == "3d" else 80 if timeframe in {"30m", "1h", "1d"} else 5
-    price_rows = recent_trading_day_rows(rows, limit=history_days)
+    price_rows = rows[-TERMINAL_BAR_COUNT:]
+    price_history_rows = recent_trading_day_rows(rows, limit=5)
     price_points = [
         {"time": timestamp_text(_row_value(row, "datetime")), "price": finite_float(_row_value(row, "close"))}
-        for row in price_rows
+        for row in price_history_rows
         if finite_float(_row_value(row, "close")) is not None
     ]
     oi_points: list[dict[str, Any]] = []
