@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+apps/api/.venv/
+apps/api/.env
+
+apps/web/node_modules/
+apps/web/.next/
+apps/web/.env.local
+
+data/*.db
