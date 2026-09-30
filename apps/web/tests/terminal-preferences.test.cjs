@@ -17,13 +17,20 @@ preferencesModule._compile(compiled, sourcePath);
 
 const { resolveTerminalPreferences } = preferencesModule.exports;
 const defaults = { contract: "P2701", timeframe: "1d", subchartMode: "oi" };
-const contracts = ["P2701", "OI2701"];
+const contracts = ["P2701", "OI2701", "MA2611"];
 const timeframes = ["15m", "30m", "1h", "1d", "3d"];
 
 test("restores a valid contract, timeframe and subplot mode", () => {
   const saved = JSON.stringify({ contract: "OI2701", timeframe: "3d", subchartMode: "volume" });
   assert.deepEqual(resolveTerminalPreferences(saved, defaults, contracts, timeframes), {
     contract: "OI2701", timeframe: "3d", subchartMode: "volume",
+  });
+});
+
+test("migrates a saved methanol selection to the replacement contract", () => {
+  const saved = JSON.stringify({ contract: "MA2610", timeframe: "30m", subchartMode: "volume" });
+  assert.deepEqual(resolveTerminalPreferences(saved, defaults, contracts, timeframes), {
+    contract: "MA2611", timeframe: "30m", subchartMode: "volume",
   });
 });
 

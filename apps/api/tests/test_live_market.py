@@ -30,9 +30,13 @@ class FakeSerial:
 class LiveMarketTests(unittest.TestCase):
     def test_requested_watchlist_varieties_have_tradeable_current_contracts(self):
         actual = {item["contract"]: item["tq_symbol"] for item in LIVE_INSTRUMENTS}
-        self.assertEqual(len(actual), 17)
+        self.assertEqual(len(actual), 21)
+        self.assertEqual(actual.get("I2701"), "DCE.i2701")
+        self.assertEqual(actual.get("HC2701"), "SHFE.hc2701")
+        self.assertEqual(actual.get("JM2701"), "DCE.jm2701")
+        self.assertEqual(actual.get("EG2701"), "DCE.eg2701")
         self.assertEqual({contract: actual.get(contract) for contract in (
-            "SR2701", "CF2701", "M2701", "A2611", "B2611", "V2701", "MA2610",
+            "SR2701", "CF2701", "M2701", "A2611", "B2611", "V2701", "MA2611",
             "RU2701", "NR2611", "BR2611", "TA2701", "EB2611",
         )}, {
             "SR2701": "CZCE.SR701",
@@ -41,7 +45,7 @@ class LiveMarketTests(unittest.TestCase):
             "A2611": "DCE.a2611",
             "B2611": "DCE.b2611",
             "V2701": "DCE.v2701",
-            "MA2610": "CZCE.MA610",
+            "MA2611": "CZCE.MA611",
             "RU2701": "SHFE.ru2701",
             "NR2611": "INE.nr2611",
             "BR2611": "SHFE.br2611",
@@ -342,6 +346,22 @@ class LiveMarketTests(unittest.TestCase):
                 result = fetch_live_quotes("5m")
             self.assertEqual(result["data_mode"], "STATIC")
             self.assertGreater(result["cache_age_seconds"], 7_000)
+
+    def test_terminal_contract_missing_from_old_snapshot_returns_empty_quote_not_404(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload = {
+                "source": "TQSDK", "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "cache_age_seconds": 0, "connection_error": None, "timeframe": "1d", "timeframe_label": "日线",
+                "data_mode": "STATIC", "quotes": [market_service.empty_quote(LIVE_INSTRUMENTS[0], "1d")],
+            }
+            Path(directory, "1d.json").write_text(json.dumps(payload), encoding="utf-8")
+            with patch("app.services.tqsdk_market.settings.market_snapshot_dir", directory), patch("app.services.tqsdk_market.start_live_feed"):
+                result = market_service.fetch_terminal_quote("I2701", "1d")
+
+        self.assertEqual(result["data_mode"], "STATIC")
+        self.assertEqual(result["quote"]["contract"], "I2701")
+        self.assertIsNone(result["quote"]["last_price"])
+        self.assertEqual(result["quote"]["bars"], [])
 
 
 if __name__ == "__main__":

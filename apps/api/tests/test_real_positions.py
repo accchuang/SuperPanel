@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from fetch_real_positions import clean_broker, fetch_eastmoney_contract_positions, fetch_eastmoney_dce, fetch_positions, normalize_eastmoney_contract_payload, normalize_payload
+from fetch_real_positions import DEFAULT_CONTRACTS, SYMBOL_EXCHANGE, clean_broker, eastmoney_contract_code, fetch_eastmoney_contract_positions, fetch_eastmoney_dce, fetch_positions, normalize_eastmoney_contract_payload, normalize_payload
 from fetch_real_positions import import_and_compute, write_csv
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -25,6 +25,29 @@ def response(pages, value):
 
 
 class FetchTests(unittest.TestCase):
+    def test_iron_ore_contract_is_in_exact_contract_batch(self):
+        self.assertIn("I2701", DEFAULT_CONTRACTS)
+        self.assertEqual(SYMBOL_EXCHANGE["I"], "DCE")
+        self.assertEqual(eastmoney_contract_code("I2701"), "i2701")
+
+    def test_hot_rolled_coil_and_coking_coal_use_exact_contract_codes(self):
+        self.assertIn("HC2701", DEFAULT_CONTRACTS)
+        self.assertIn("JM2701", DEFAULT_CONTRACTS)
+        self.assertEqual(SYMBOL_EXCHANGE["HC"], "SHFE")
+        self.assertEqual(SYMBOL_EXCHANGE["JM"], "DCE")
+        self.assertEqual(eastmoney_contract_code("HC2701"), "hc2701")
+        self.assertEqual(eastmoney_contract_code("JM2701"), "jm2701")
+
+    def test_ethylene_glycol_uses_exact_contract_code_in_the_daily_batch(self):
+        self.assertIn("EG2701", DEFAULT_CONTRACTS)
+        self.assertEqual(SYMBOL_EXCHANGE["EG"], "DCE")
+        self.assertEqual(eastmoney_contract_code("EG2701"), "eg2701")
+
+    def test_methanol_contract_uses_november_code_in_exact_contract_batch(self):
+        self.assertIn("MA2611", DEFAULT_CONTRACTS)
+        self.assertNotIn("MA2610", DEFAULT_CONTRACTS)
+        self.assertEqual(eastmoney_contract_code("MA2611"), "ma611")
+
     @patch("fetch_real_positions.requests.get")
     def test_contract_fetch_queries_the_exact_market_contract(self, get):
         response = MagicMock()

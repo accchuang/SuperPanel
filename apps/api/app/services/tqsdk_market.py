@@ -17,6 +17,9 @@ from app.core.config import settings
 
 LIVE_INSTRUMENTS = (
     {"variety": "P", "name": "棕榈油", "contract": "P2701", "exchange": "DCE", "sector": "油脂油料", "tq_symbol": "DCE.p2701"},
+    {"variety": "I", "name": "铁矿石", "contract": "I2701", "exchange": "DCE", "sector": "黑色系", "tq_symbol": "DCE.i2701"},
+    {"variety": "HC", "name": "热卷", "contract": "HC2701", "exchange": "SHFE", "sector": "黑色系", "tq_symbol": "SHFE.hc2701"},
+    {"variety": "JM", "name": "焦煤", "contract": "JM2701", "exchange": "DCE", "sector": "黑色系", "tq_symbol": "DCE.jm2701"},
     {"variety": "OI", "name": "菜籽油", "contract": "OI2701", "exchange": "CZCE", "sector": "油脂油料", "tq_symbol": "CZCE.OI701"},
     {"variety": "Y", "name": "豆油", "contract": "Y2701", "exchange": "DCE", "sector": "油脂油料", "tq_symbol": "DCE.y2701"},
     {"variety": "LH", "name": "生猪", "contract": "LH2611", "exchange": "DCE", "sector": "农产品", "tq_symbol": "DCE.lh2611"},
@@ -29,7 +32,8 @@ LIVE_INSTRUMENTS = (
     {"variety": "V", "name": "PVC", "contract": "V2701", "exchange": "DCE", "sector": "化工", "tq_symbol": "DCE.v2701"},
     {"variety": "TA", "name": "PTA", "contract": "TA2701", "exchange": "CZCE", "sector": "化工", "tq_symbol": "CZCE.TA701"},
     {"variety": "EB", "name": "苯乙烯", "contract": "EB2611", "exchange": "DCE", "sector": "化工", "tq_symbol": "DCE.eb2611"},
-    {"variety": "MA", "name": "甲醇", "contract": "MA2610", "exchange": "CZCE", "sector": "化工", "tq_symbol": "CZCE.MA610"},
+    {"variety": "EG", "name": "乙二醇", "contract": "EG2701", "exchange": "DCE", "sector": "化工", "tq_symbol": "DCE.eg2701"},
+    {"variety": "MA", "name": "甲醇", "contract": "MA2611", "exchange": "CZCE", "sector": "化工", "tq_symbol": "CZCE.MA611"},
     {"variety": "RU", "name": "天然橡胶", "contract": "RU2701", "exchange": "SHFE", "sector": "橡胶", "tq_symbol": "SHFE.ru2701"},
     {"variety": "NR", "name": "20号胶", "contract": "NR2611", "exchange": "INE", "sector": "橡胶", "tq_symbol": "INE.nr2611"},
     {"variety": "BR", "name": "丁二烯橡胶", "contract": "BR2611", "exchange": "SHFE", "sector": "橡胶", "tq_symbol": "SHFE.br2611"},
@@ -63,15 +67,16 @@ PRODUCT_NAMES = {
 
 TIMEFRAMES = {
     "1m": {"seconds": 60, "label": "1 分钟", "data_length": 2_000},
-    "5m": {"seconds": 300, "label": "5 分钟", "data_length": 420},
-    "15m": {"seconds": 900, "label": "15 分钟", "data_length": 180},
+    "5m": {"seconds": 300, "label": "5 分钟", "data_length": 600},
+    "15m": {"seconds": 900, "label": "15 分钟", "data_length": 600},
     "30m": {"seconds": 1_800, "label": "30 分钟", "data_length": 900},
-    "1h": {"seconds": 3_600, "label": "1 小时", "data_length": 500},
-    "1d": {"seconds": 86_400, "label": "日线", "data_length": 180},
-    "3d": {"seconds": 3 * 86_400, "label": "3 日 K", "data_length": 180},
+    "1h": {"seconds": 3_600, "label": "1 小时", "data_length": 600},
+    "1d": {"seconds": 86_400, "label": "日线", "data_length": 600},
+    "3d": {"seconds": 3 * 86_400, "label": "3 日 K", "data_length": 600},
 }
 
-TERMINAL_BAR_COUNT = 180
+# Keep enough history for a 500-bar chart view plus indicator warm-up bars.
+TERMINAL_BAR_COUNT = 600
 
 _lock = threading.Lock()
 _worker: subprocess.Popen[bytes] | None = None
@@ -441,6 +446,13 @@ def fetch_live_quotes(timeframe: str = "5m") -> dict[str, Any]:
         if _worker is not None and _worker.poll() is not None:
             worker_error = f"TqSdk 行情进程已退出（code {_worker.returncode}），正在使用最后静态快照"
         expired = age > 30 and payload.get("data_mode") == "LIVE"
+        quotes = list(payload["quotes"])
+        snapshot_contracts = {item.get("contract") for item in quotes}
+        quotes.extend(
+            empty_quote(instrument, timeframe)
+            for instrument in LIVE_INSTRUMENTS
+            if instrument["contract"] not in snapshot_contracts
+        )
         return {
             **payload,
             "cache_age_seconds": round(age, 1),
@@ -448,8 +460,8 @@ def fetch_live_quotes(timeframe: str = "5m") -> dict[str, Any]:
             "data_mode": "STATIC" if expired else payload["data_mode"],
             "quotes": [
                 {**item, "status": "DELAYED" if item.get("status") == "LIVE" else item.get("status")}
-                for item in payload["quotes"]
-            ] if expired else payload["quotes"],
+                for item in quotes
+            ] if expired else quotes,
         }
     except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
         return {

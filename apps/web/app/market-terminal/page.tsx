@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -22,7 +22,7 @@ import { resolveTerminalPreferences, TERMINAL_PREFERENCES_KEY, type SubchartMode
 import { terminalChartTime, type ChartTime } from "@/lib/terminal-time";
 import { buildTradingSessionSpans } from "@/lib/trading-sessions";
 import { TradingSessionBackground } from "@/lib/trading-session-background";
-import { buildBarExtremeMarkers, rankRecentBarExtremes, rankRecentOpenInterestChanges, type RankedBarExtreme } from "@/lib/bar-extremes";
+import { rankRecentBarExtremes, rankRecentOpenInterestChanges } from "@/lib/bar-extremes";
 import { buildChannelSwingPath } from "@/lib/channel-swings";
 import { formatNumber } from "@/lib/utils";
 import { terminalQuoteMode } from "@/lib/terminal-research";
@@ -31,9 +31,18 @@ import { terminalStatusTooltip } from "@/lib/terminal-subchart";
 import { netPositionBarValues } from "@/lib/leaderboard-visuals";
 import { leaderboardContractCode, leaderboardLookupSymbols } from "@/lib/leaderboard-contract";
 import { resolveTerminalTheme, TERMINAL_THEME_KEY, terminalChartPalette, terminalUiPalette, type TerminalTheme } from "@/lib/terminal-theme";
+import { buildVolumeProfile, selectVisibleProfileBars } from "@/lib/volume-profile";
+import { chartDrawingsStorageKey, parseChartDrawings, placeChartDrawing, undoChartDrawing, type ChartDrawing, type DrawingAnchor, type DrawingTool } from "@/lib/chart-drawings";
+import { buildBackToBackKeyLevels, buildBackToBackVolatilityEligibility, detectBackToBackSignals } from "@/lib/back-to-back-signals";
+import { measureSignalBubble, mergeSignalBubbles, selectSignalFactors, type SignalBubble, type SignalBubbleFactor, type SignalBubbleFactorKind } from "@/lib/signal-bubbles";
+import { checkPriceAlerts, parsePriceAlerts, PRICE_ALERTS_KEY, type PriceAlert, type PriceAlertDirection, type PriceSample } from "@/lib/price-alerts";
+import { PriceAlertsMenu } from "@/components/price-alerts-menu";
 
 const CONTRACTS = [
   { contract: "P2701", name: "棕榈油", exchange: "DCE", sector: "油脂油料" },
+  { contract: "I2701", name: "铁矿石", exchange: "DCE", sector: "黑色系" },
+  { contract: "HC2701", name: "热卷", exchange: "SHFE", sector: "黑色系" },
+  { contract: "JM2701", name: "焦煤", exchange: "DCE", sector: "黑色系" },
   { contract: "OI2701", name: "菜籽油", exchange: "CZCE", sector: "油脂油料" },
   { contract: "Y2701", name: "豆油", exchange: "DCE", sector: "油脂油料" },
   { contract: "LH2611", name: "生猪", exchange: "DCE", sector: "农产品" },
@@ -46,7 +55,8 @@ const CONTRACTS = [
   { contract: "V2701", name: "PVC", exchange: "DCE", sector: "化工" },
   { contract: "TA2701", name: "PTA", exchange: "CZCE", sector: "化工" },
   { contract: "EB2611", name: "苯乙烯", exchange: "DCE", sector: "化工" },
-  { contract: "MA2610", name: "甲醇", exchange: "CZCE", sector: "化工" },
+  { contract: "EG2701", name: "乙二醇", exchange: "DCE", sector: "化工" },
+  { contract: "MA2611", name: "甲醇", exchange: "CZCE", sector: "化工" },
   { contract: "RU2701", name: "天然橡胶", exchange: "SHFE", sector: "橡胶" },
   { contract: "NR2611", name: "20号胶", exchange: "INE", sector: "橡胶" },
   { contract: "BR2611", name: "丁二烯橡胶", exchange: "SHFE", sector: "橡胶" },
@@ -58,6 +68,15 @@ const TIMEFRAMES: { value: MarketTimeframe; label: string }[] = [
   { value: "1h", label: "1 小时" },
   { value: "1d", label: "日线" },
   { value: "3d", label: "3 日 K" },
+];
+
+const DEFAULT_VISIBLE_BARS = 50;
+
+const SIGNAL_FILTER_OPTIONS: { kind: SignalBubbleFactorKind; label: string }[] = [
+  { kind: "volume", label: "成交量" },
+  { kind: "body", label: "实体" },
+  { kind: "oi", label: "OI 变化" },
+  { kind: "backToBack", label: "背靠背" },
 ];
 
 const NET_POSITION_COLOR = "#76BFA1";
@@ -100,7 +119,6 @@ type ChartState = {
   channelMiddleSeries: ISeriesApi<"Line">;
   swingPathSeries: ISeriesApi<"Line">;
   subchartSeries: ISeriesApi<"Histogram">;
-  extremeMarkers: ISeriesMarkersPluginApi<ChartTime>;
   subchartExtremeMarkers: ISeriesMarkersPluginApi<ChartTime>;
   priceSessionBackground: TradingSessionBackground;
   subchartSessionBackground: TradingSessionBackground;
@@ -112,11 +130,19 @@ type CandlePoint = {
   high: number;
   low: number;
   close: number;
+  is_closed: boolean;
   borderColor?: string;
   wickColor?: string;
 };
 
 type ChannelLinePoint = { time: ChartTime; value: number };
+type ChartSignalBubble = SignalBubble & { chartTime: ChartTime; anchorPrice: number };
+type PriceAlertNotice = { id: string; alert: PriceAlert; observedPrice: number };
+
+function chartTimeKey(time: ChartTime): string {
+  if (typeof time === "number" || typeof time === "string") return String(time);
+  return `${time.year}-${String(time.month).padStart(2, "0")}-${String(time.day).padStart(2, "0")}`;
+}
 
 function exponentialAverage(values: number[], period: number) {
   if (!values.length) return [];
@@ -158,6 +184,14 @@ function TerminalCharts({
   onSubchartModeChange,
   channelVisible,
   onChannelVisibleChange,
+  volumeProfileVisible,
+  onVolumeProfileVisibleChange,
+  selectedSignalKinds,
+  onSelectedSignalKindsChange,
+  priceAlerts,
+  onAddPriceAlert,
+  onTogglePriceAlert,
+  onRemovePriceAlert,
 }: {
   quote: LiveQuote;
   theme: TerminalTheme;
@@ -165,18 +199,56 @@ function TerminalCharts({
   onSubchartModeChange: (mode: SubchartMode) => void;
   channelVisible: boolean;
   onChannelVisibleChange: (visible: boolean) => void;
+  volumeProfileVisible: boolean;
+  onVolumeProfileVisibleChange: (visible: boolean) => void;
+  selectedSignalKinds: SignalBubbleFactorKind[];
+  onSelectedSignalKindsChange: Dispatch<SetStateAction<SignalBubbleFactorKind[]>>;
+  priceAlerts: PriceAlert[];
+  onAddPriceAlert: (price: number, direction: PriceAlertDirection) => void;
+  onTogglePriceAlert: (id: string) => void;
+  onRemovePriceAlert: (id: string) => void;
 }) {
   const palette = terminalChartPalette(theme);
   const priceContainer = useRef<HTMLDivElement>(null);
+  const profileCanvas = useRef<HTMLCanvasElement>(null);
+  const drawingsCanvas = useRef<HTMLCanvasElement>(null);
+  const signalCanvas = useRef<HTMLCanvasElement>(null);
   const subchartContainer = useRef<HTMLDivElement>(null);
   const state = useRef<ChartState | null>(null);
-  const extremeBarsByTime = useRef(new Map<ChartTime, RankedBarExtreme>());
+  const signalBubblesByTime = useRef(new Map<string, ChartSignalBubble>());
   const initialized = useRef(false);
-  const [hoveredExtreme, setHoveredExtreme] = useState<{
-    bar: RankedBarExtreme;
+  const [activeDrawingTool, setActiveDrawingTool] = useState<DrawingTool | null>(null);
+  const [drawings, setDrawings] = useState<ChartDrawing[]>([]);
+  const [pendingDrawingPoint, setPendingDrawingPoint] = useState<DrawingAnchor | null>(null);
+  const [drawingsReady, setDrawingsReady] = useState(false);
+  const [visibleRange, setVisibleRange] = useState<LogicalRange | null>(null);
+  const [signalBubbles, setSignalBubbles] = useState<ChartSignalBubble[]>([]);
+  const [hoveredSignalBubble, setHoveredSignalBubble] = useState<{
+    bubble: ChartSignalBubble;
     x: number;
     y: number;
   } | null>(null);
+  const drawingToolRef = useRef<DrawingTool | null>(activeDrawingTool);
+  const drawingsRef = useRef<ChartDrawing[]>(drawings);
+  const candlesRef = useRef<CandlePoint[]>([]);
+  const pendingDrawingPointRef = useRef<DrawingAnchor | null>(pendingDrawingPoint);
+  drawingToolRef.current = activeDrawingTool;
+  drawingsRef.current = drawings;
+  pendingDrawingPointRef.current = pendingDrawingPoint;
+  const drawingsStorageKey = chartDrawingsStorageKey(quote.contract, quote.timeframe);
+  const contractAlerts = useMemo(() => priceAlerts.filter((alert) => alert.contract === quote.contract), [priceAlerts, quote.contract]);
+  const horizontalPrices = drawings.flatMap((drawing) => drawing.kind === "horizontal" ? [drawing.price] : []);
+
+  useEffect(() => {
+    setDrawings(parseChartDrawings(window.localStorage.getItem(drawingsStorageKey)));
+    setPendingDrawingPoint(null);
+    setDrawingsReady(true);
+  }, [drawingsStorageKey]);
+
+  useEffect(() => {
+    if (!drawingsReady) return;
+    window.localStorage.setItem(drawingsStorageKey, JSON.stringify(drawings));
+  }, [drawings, drawingsReady, drawingsStorageKey]);
 
   useEffect(() => {
     if (!priceContainer.current || !subchartContainer.current) return;
@@ -193,7 +265,6 @@ function TerminalCharts({
       priceLineVisible: true,
       lastValueVisible: true,
     });
-    const extremeMarkers = createSeriesMarkers(candleSeries, [], { autoScale: false, zOrder: "aboveSeries" });
     const channelUpperSeries = priceChart.addSeries(LineSeries, {
       color: palette.channel,
       lineWidth: 1,
@@ -245,7 +316,6 @@ function TerminalCharts({
       channelMiddleSeries,
       swingPathSeries,
       subchartSeries,
-      extremeMarkers,
       subchartExtremeMarkers,
       priceSessionBackground,
       subchartSessionBackground,
@@ -264,17 +334,59 @@ function TerminalCharts({
       priceChart.timeScale().setVisibleLogicalRange(range);
       syncing = false;
     };
+    const trackVisibleRange = (range: LogicalRange | null) => setVisibleRange(range);
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(syncPriceRange);
+    priceChart.timeScale().subscribeVisibleLogicalRangeChange(trackVisibleRange);
     subchartChart.timeScale().subscribeVisibleLogicalRangeChange(syncSubchartRange);
     const handleCrosshairMove = (param: Parameters<IChartApi["subscribeCrosshairMove"]>[0] extends (event: infer Event) => void ? Event : never) => {
       if (!param.point || param.time == null) {
-        setHoveredExtreme(null);
+        setHoveredSignalBubble(null);
         return;
       }
-      const bar = extremeBarsByTime.current.get(param.time as ChartTime);
-      setHoveredExtreme(bar ? { bar, x: param.point.x, y: param.point.y } : null);
+      const bubble = signalBubblesByTime.current.get(chartTimeKey(param.time as ChartTime));
+      setHoveredSignalBubble(bubble ? { bubble, x: param.point.x, y: param.point.y } : null);
     };
     priceChart.subscribeCrosshairMove(handleCrosshairMove);
+    const handleChartClick = (param: Parameters<IChartApi["subscribeClick"]>[0] extends (event: infer Event) => void ? Event : never) => {
+      const tool = drawingToolRef.current;
+      const point = param.point;
+      const current = state.current;
+      const container = priceContainer.current;
+      if (!tool || !point || !current || !container) return;
+      const plotRight = container.clientWidth - current.priceChart.priceScale("right").width();
+      if (point.x < 0 || point.x > plotRight || point.y < 0 || point.y > container.clientHeight) return;
+      const price = current.candleSeries.coordinateToPrice(point.y);
+      if (price == null || !Number.isFinite(price)) return;
+      if ((tool === "trendline" || tool === "vertical" || tool === "rangeCircle") && param.time == null) return;
+      const anchor: DrawingAnchor = { time: (param.time ?? 0) as ChartTime, price };
+      let rangeCircleBounds: { startTime: ChartTime; endTime: ChartTime; high: number; low: number } | undefined;
+      if (tool === "rangeCircle" && pendingDrawingPointRef.current) {
+        const candles = candlesRef.current;
+        const startIndex = candles.findIndex((candle) => chartTimeKey(candle.time) === chartTimeKey(pendingDrawingPointRef.current!.time as ChartTime));
+        const endIndex = candles.findIndex((candle) => chartTimeKey(candle.time) === chartTimeKey(anchor.time as ChartTime));
+        if (startIndex < 0 || endIndex < 0) return;
+        const firstIndex = Math.min(startIndex, endIndex);
+        const lastIndex = Math.max(startIndex, endIndex);
+        const selectedCandles = candles.slice(firstIndex, lastIndex + 1);
+        rangeCircleBounds = {
+          startTime: selectedCandles[0].time,
+          endTime: selectedCandles[selectedCandles.length - 1].time,
+          high: Math.max(...selectedCandles.map((candle) => candle.high)),
+          low: Math.min(...selectedCandles.map((candle) => candle.low)),
+        };
+      }
+      const result = placeChartDrawing(
+        drawingsRef.current,
+        tool,
+        anchor,
+        pendingDrawingPointRef.current,
+        typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `drawing-${Date.now()}-${Math.random()}`,
+        rangeCircleBounds,
+      );
+      setDrawings(result.drawings);
+      setPendingDrawingPoint(result.pendingPoint);
+    };
+    priceChart.subscribeClick(handleChartClick);
 
     const resize = () => {
       if (!priceContainer.current || !subchartContainer.current) return;
@@ -289,9 +401,10 @@ function TerminalCharts({
     return () => {
       observer.disconnect();
       priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncPriceRange);
+      priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(trackVisibleRange);
       subchartChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncSubchartRange);
       priceChart.unsubscribeCrosshairMove(handleCrosshairMove);
-      extremeMarkers.detach();
+      priceChart.unsubscribeClick(handleChartClick);
       subchartExtremeMarkers.detach();
       candleSeries.detachPrimitive(priceSessionBackground);
       subchartSeries.detachPrimitive(subchartSessionBackground);
@@ -302,30 +415,252 @@ function TerminalCharts({
   }, []);
 
   useEffect(() => {
+    const canvas = drawingsCanvas.current;
+    const current = state.current;
+    if (!canvas || !current) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    let frame = 0;
+    const draw = () => {
+      const bounds = canvas.getBoundingClientRect();
+      const width = bounds.width;
+      const height = bounds.height;
+      const pixelRatio = window.devicePixelRatio || 1;
+      const pixelWidth = Math.round(width * pixelRatio);
+      const pixelHeight = Math.round(height * pixelRatio);
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+      }
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      if (width < 80 || height < 40) return;
+
+      const plotRight = width - current.priceChart.priceScale("right").width();
+      context.save();
+      context.beginPath();
+      context.rect(0, 0, plotRight, height);
+      context.clip();
+      context.lineWidth = 1.5;
+      context.strokeStyle = theme === "dark" ? "#F2C85C" : "#B66F13";
+      context.fillStyle = context.strokeStyle;
+      context.setLineDash([]);
+
+      for (const drawing of drawings) {
+        if (drawing.kind === "vertical") {
+          const x = current.priceChart.timeScale().timeToCoordinate(drawing.time as ChartTime);
+          if (x == null) continue;
+          context.beginPath();
+          context.moveTo(x, 0);
+          context.lineTo(x, height);
+          context.stroke();
+          continue;
+        }
+        if (drawing.kind === "horizontal") {
+          const y = current.candleSeries.priceToCoordinate(drawing.price);
+          if (y == null) continue;
+          context.beginPath();
+          context.moveTo(0, y);
+          context.lineTo(plotRight, y);
+          context.stroke();
+          continue;
+        }
+        if (drawing.kind === "rangeCircle") {
+          const startX = current.priceChart.timeScale().timeToCoordinate(drawing.startTime as ChartTime);
+          const endX = current.priceChart.timeScale().timeToCoordinate(drawing.endTime as ChartTime);
+          const highY = current.candleSeries.priceToCoordinate(drawing.high);
+          const lowY = current.candleSeries.priceToCoordinate(drawing.low);
+          if (startX == null || endX == null || highY == null || lowY == null) continue;
+          const left = Math.min(startX, endX);
+          const right = Math.max(startX, endX);
+          const top = Math.min(highY, lowY);
+          const bottom = Math.max(highY, lowY);
+          context.beginPath();
+          context.ellipse((left + right) / 2, (top + bottom) / 2, Math.max((right - left) / 2, 4), Math.max((bottom - top) / 2, 4), 0, 0, Math.PI * 2);
+          context.fillStyle = theme === "dark" ? "rgba(255, 203, 92, 0.16)" : "rgba(232, 157, 43, 0.18)";
+          context.fill();
+          context.strokeStyle = theme === "dark" ? "rgba(255, 215, 120, 0.86)" : "rgba(176, 104, 24, 0.88)";
+          context.stroke();
+          context.strokeStyle = theme === "dark" ? "#F2C85C" : "#B66F13";
+          continue;
+        }
+        const startX = current.priceChart.timeScale().timeToCoordinate(drawing.start.time as ChartTime);
+        const startY = current.candleSeries.priceToCoordinate(drawing.start.price);
+        const endX = current.priceChart.timeScale().timeToCoordinate(drawing.end.time as ChartTime);
+        const endY = current.candleSeries.priceToCoordinate(drawing.end.price);
+        if (startX == null || startY == null || endX == null || endY == null) continue;
+        context.beginPath();
+        context.moveTo(startX, startY);
+        context.lineTo(endX, endY);
+        context.stroke();
+        for (const [x, y] of [[startX, startY], [endX, endY]]) {
+          context.beginPath();
+          context.arc(x, y, 2.5, 0, Math.PI * 2);
+          context.fill();
+        }
+      }
+      for (const alert of contractAlerts) {
+        if (!alert.armed) continue;
+        const y = current.candleSeries.priceToCoordinate(alert.price);
+        if (y == null || y < 0 || y > height) continue;
+        context.beginPath();
+        context.setLineDash([5, 4]);
+        context.strokeStyle = theme === "dark" ? "#FFD76F" : "#B78546";
+        context.lineWidth = 1;
+        context.moveTo(0, y);
+        context.lineTo(plotRight, y);
+        context.stroke();
+        context.setLineDash([]);
+        const label = `${alert.direction === "above" ? "↑" : "↓"} ${formatNumber(alert.price)}`;
+        context.font = "600 10px Arial, sans-serif";
+        const labelWidth = context.measureText(label).width + 8;
+        context.fillStyle = theme === "dark" ? "#382D1B" : "#FFF9F0";
+        context.fillRect(Math.max(2, plotRight - labelWidth - 4), y - 13, labelWidth, 14);
+        context.fillStyle = theme === "dark" ? "#FFE18A" : "#936830";
+        context.fillText(label, Math.max(6, plotRight - labelWidth), y - 2);
+      }
+      context.restore();
+    };
+    const scheduleDraw = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        draw();
+      });
+    };
+
+    draw();
+    const observer = new ResizeObserver(scheduleDraw);
+    if (canvas.parentElement) observer.observe(canvas.parentElement);
+    const interactionSurface = priceContainer.current?.parentElement;
+    interactionSurface?.addEventListener("pointerup", scheduleDraw);
+    interactionSurface?.addEventListener("wheel", scheduleDraw, { passive: true });
+    window.addEventListener("resize", scheduleDraw);
+    return () => {
+      observer.disconnect();
+      interactionSurface?.removeEventListener("pointerup", scheduleDraw);
+      interactionSurface?.removeEventListener("wheel", scheduleDraw);
+      window.removeEventListener("resize", scheduleDraw);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [drawings, contractAlerts, visibleRange, quote, theme]);
+
+  useEffect(() => {
+    const canvas = signalCanvas.current;
+    const current = state.current;
+    if (!canvas || !current) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    let frame = 0;
+    const draw = () => {
+      const bounds = canvas.getBoundingClientRect();
+      const width = bounds.width;
+      const height = bounds.height;
+      const pixelRatio = window.devicePixelRatio || 1;
+      const pixelWidth = Math.round(width * pixelRatio);
+      const pixelHeight = Math.round(height * pixelRatio);
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+      }
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      if (width < 80 || height < 40) return;
+
+      const plotRight = width - current.priceChart.priceScale("right").width();
+      context.save();
+      context.beginPath();
+      context.rect(0, 0, plotRight, height);
+      context.clip();
+      context.font = "600 9px -apple-system, BlinkMacSystemFont, sans-serif";
+      context.textBaseline = "middle";
+      const occupied: Array<{ left: number; right: number; top: number; bottom: number }> = [];
+      for (const bubble of signalBubbles) {
+        const x = current.priceChart.timeScale().timeToCoordinate(bubble.chartTime);
+        const anchorY = current.candleSeries.priceToCoordinate(bubble.anchorPrice);
+        if (x == null || anchorY == null || x < 0 || x > plotRight) continue;
+
+        const labelWidths = bubble.factors.map((factor) => context.measureText(factor.label).width);
+        const bubbleLayout = measureSignalBubble(labelWidths);
+        const bubbleWidth = bubbleLayout.width;
+        const bubbleHeight = bubbleLayout.height;
+        const left = Math.max(3, Math.min(x - bubbleWidth / 2, plotRight - bubbleWidth - 3));
+        const rawTop = bubble.position === "above" ? anchorY - bubbleHeight - 5 : anchorY + 5;
+        const preferredDirection = bubble.position === "above" ? -1 : 1;
+        const candidateTops = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5]
+          .map((step) => rawTop + step * 22)
+          .filter((candidate) => candidate >= 2 && candidate + bubbleHeight <= height - 2)
+          .sort((a, b) => Math.abs(a - rawTop) - Math.abs(b - rawTop)
+            || (Math.sign(a - rawTop) === preferredDirection ? -1 : 1));
+        const top = candidateTops.find((candidate) => !occupied.some((rect) =>
+          left < rect.right + 3 && left + bubbleWidth + 3 > rect.left
+          && candidate < rect.bottom + 3 && candidate + bubbleHeight + 3 > rect.top,
+        )) ?? Math.max(2, Math.min(rawTop, height - bubbleHeight - 2));
+        occupied.push({ left, right: left + bubbleWidth, top, bottom: top + bubbleHeight });
+
+        const edgeY = top > anchorY ? top : top + bubbleHeight;
+        if (Math.abs(edgeY - anchorY) > 24) {
+          context.beginPath();
+          context.moveTo(x, anchorY);
+          context.lineTo(x, edgeY);
+          context.strokeStyle = theme === "dark" ? "rgba(212, 187, 117, 0.78)" : "rgba(121, 135, 143, 0.48)";
+          context.lineWidth = 1;
+          context.stroke();
+        }
+
+        context.beginPath();
+        context.roundRect(left, top, bubbleWidth, bubbleHeight, 8);
+        context.fillStyle = theme === "dark" ? "rgba(39, 36, 29, 0.97)" : "rgba(255, 255, 255, 0.96)";
+        context.fill();
+        context.strokeStyle = bubble.direction
+          ? bubble.direction === "bullish" ? palette.markerOiUp : palette.markerOiDown
+          : theme === "dark" ? "#A89B77" : "#BFC9CE";
+        context.lineWidth = 1;
+        context.stroke();
+
+        bubble.factors.forEach((factor, index) => {
+          context.fillStyle = factor.color;
+          context.fillText(factor.label, left + 6, top + bubbleLayout.rowCenters[index]);
+        });
+      }
+      context.restore();
+    };
+    const scheduleDraw = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        draw();
+      });
+    };
+    const handleRangeChange = () => scheduleDraw();
+
+    draw();
+    const observer = new ResizeObserver(scheduleDraw);
+    if (canvas.parentElement) observer.observe(canvas.parentElement);
+    const interactionSurface = priceContainer.current?.parentElement;
+    interactionSurface?.addEventListener("pointerup", scheduleDraw);
+    interactionSurface?.addEventListener("wheel", scheduleDraw, { passive: true });
+    current.priceChart.timeScale().subscribeVisibleLogicalRangeChange(handleRangeChange);
+    window.addEventListener("resize", scheduleDraw);
+    return () => {
+      observer.disconnect();
+      interactionSurface?.removeEventListener("pointerup", scheduleDraw);
+      interactionSurface?.removeEventListener("wheel", scheduleDraw);
+      current.priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(handleRangeChange);
+      window.removeEventListener("resize", scheduleDraw);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [signalBubbles, visibleRange, quote, theme, palette]);
+
+  useEffect(() => {
     const current = state.current;
     if (!current) return;
     const bars = quote.bars?.length ? quote.bars : quote.daily_bars ?? [];
-    extremeBarsByTime.current.clear();
     const rankedExtremes = rankRecentBarExtremes(bars);
-    for (const ranked of rankedExtremes) {
-      const time = terminalChartTime(ranked.time, quote.timeframe);
-      if (time != null) extremeBarsByTime.current.set(time, ranked);
-    }
-    const markers = buildBarExtremeMarkers(rankedExtremes).flatMap((marker) => {
-      const time = terminalChartTime(marker.time, quote.timeframe);
-      if (time == null) return [];
-      return [
-        {
-          time,
-          position: marker.kind === "volume" ? "aboveBar" as const : "belowBar" as const,
-          shape: "circle" as const,
-          color: marker.kind === "volume" ? palette.markerVolume : palette.markerEntity,
-          size: 1.5,
-        },
-      ];
-    });
-    current.extremeMarkers.setMarkers(markers);
-    const oiExtremes = subchartMode === "oi" ? rankRecentOpenInterestChanges(bars) : [];
+    const rankedOiExtremes = rankRecentOpenInterestChanges(bars);
+    const oiExtremes = subchartMode === "oi" ? rankedOiExtremes : [];
     current.subchartExtremeMarkers.setMarkers(oiExtremes.flatMap((marker) => {
       const time = terminalChartTime(marker.time, quote.timeframe);
       if (time == null) return [];
@@ -337,10 +672,6 @@ function TerminalCharts({
         size: 1.5,
       }];
     }));
-    if (!markers.length) setHoveredExtreme(null);
-    const sessionSpans = buildTradingSessionSpans(bars, quote.timeframe);
-    current.priceSessionBackground.setSpans(sessionSpans, quote.timeframe);
-    current.subchartSessionBackground.setSpans(sessionSpans, quote.timeframe);
     const candles: CandlePoint[] = bars.flatMap((bar) => {
       const time = terminalChartTime(bar.time, quote.timeframe);
       if (time == null) return [];
@@ -351,9 +682,76 @@ function TerminalCharts({
         high: bar.high ?? close,
         low: bar.low ?? close,
         close,
+        is_closed: bar.is_closed,
       }];
     });
+    candlesRef.current = candles;
+    const sessionSpans = buildTradingSessionSpans(bars, quote.timeframe);
+    current.priceSessionBackground.setSpans(sessionSpans, quote.timeframe);
+    current.subchartSessionBackground.setSpans(sessionSpans, quote.timeframe);
     const channel = adaptiveChannel(candles);
+    const signalLevels = buildBackToBackKeyLevels(candles, channel.map((point) => ({
+      upper: point.upper.value,
+      lower: point.lower.value,
+      atr: point.atr,
+    })));
+    const volatilityEligibility = buildBackToBackVolatilityEligibility(candles);
+    const backToBackSignals = detectBackToBackSignals(candles, signalLevels, volatilityEligibility);
+    const signalFactors: SignalBubbleFactor[] = [];
+    const addFactor = (time: ChartTime | null, factor: Omit<SignalBubbleFactor, "time">) => {
+      if (time != null) signalFactors.push({ time: chartTimeKey(time), ...factor });
+    };
+    for (const ranked of rankedExtremes) {
+      if (ranked.volumeRank != null) {
+        addFactor(terminalChartTime(ranked.time, quote.timeframe), {
+          kind: "volume",
+          label: "量" + ranked.volumeRank,
+          detail: "成交量第" + ranked.volumeRank + "：" + (ranked.volume == null ? "--" : formatNumber(ranked.volume) + " 手"),
+          color: palette.markerVolume,
+        });
+      }
+      if (ranked.bodyRank != null) {
+        addFactor(terminalChartTime(ranked.time, quote.timeframe), {
+          kind: "body",
+          label: "实体" + ranked.bodyRank,
+          detail: "实体第" + ranked.bodyRank + "：" + (ranked.bodySize == null ? "--" : formatNumber(ranked.bodySize)),
+          color: palette.markerEntity,
+        });
+      }
+    }
+    for (const marker of rankedOiExtremes) {
+      addFactor(terminalChartTime(marker.time, quote.timeframe), {
+        kind: "oi",
+        label: marker.change >= 0 ? "OI+" : "OI−",
+        detail: "持仓量变化第" + marker.rank + "：" + (marker.change >= 0 ? "增加 " : "减少 ")
+          + formatNumber(Math.abs(marker.change)) + " 手",
+        color: marker.change >= 0 ? palette.markerOiUp : palette.markerOiDown,
+      });
+    }
+    for (const signal of backToBackSignals) {
+      const bullish = signal.direction === "bullish";
+      addFactor(signal.time, {
+        kind: "backToBack",
+        label: bullish ? "背↑" : "背↓",
+        detail: "背靠背" + (bullish ? "看涨" : "看跌") + "：实体重叠 "
+          + Math.round(signal.overlapRatio * 100) + "%，关键位 " + formatNumber(signal.keyLevel),
+        color: bullish ? palette.markerOiUp : palette.markerOiDown,
+        direction: signal.direction,
+      });
+    }
+    const candlesByTime = new Map(candles.map((candle) => [chartTimeKey(candle.time), candle]));
+    const bubbles: ChartSignalBubble[] = mergeSignalBubbles(selectSignalFactors(signalFactors, selectedSignalKinds)).flatMap((bubble) => {
+      const candle = candlesByTime.get(bubble.time);
+      if (!candle) return [];
+      return [{
+        ...bubble,
+        chartTime: candle.time,
+        anchorPrice: bubble.position === "above" ? candle.high : candle.low,
+      }];
+    });
+    signalBubblesByTime.current = new Map(bubbles.map((bubble) => [chartTimeKey(bubble.chartTime), bubble]));
+    setSignalBubbles(bubbles);
+    setHoveredSignalBubble(null);
     const swingPath = channelVisible
       ? buildChannelSwingPath(candles, channel.map((point) => ({
           upper: point.upper.value,
@@ -391,7 +789,7 @@ function TerminalCharts({
     current.swingPathSeries.setData(swingPath);
     current.subchartSeries.setData(subchart);
     if (!initialized.current && candles.length) {
-      const visibleBars = Math.min(candles.length, 180);
+      const visibleBars = Math.min(candles.length, DEFAULT_VISIBLE_BARS);
       const rightPadding = visibleBars;
       current.priceChart.timeScale().setVisibleLogicalRange({
         from: candles.length - visibleBars - 0.5,
@@ -399,21 +797,170 @@ function TerminalCharts({
       });
       initialized.current = true;
     }
-  }, [quote, channelVisible, subchartMode]);
+  }, [quote, channelVisible, subchartMode, selectedSignalKinds]);
+
+  useEffect(() => {
+    const canvas = profileCanvas.current;
+    const current = state.current;
+    if (!canvas || !current) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    const bars = quote.bars?.length ? quote.bars : quote.daily_bars ?? [];
+    const chartBars = bars.filter((bar) => terminalChartTime(bar.time, quote.timeframe) != null);
+    const visibleBars = selectVisibleProfileBars(chartBars, visibleRange);
+    const profile = buildVolumeProfile(visibleBars.map(({ high, low, close, volume }) => ({ high, low, close, volume })));
+    let frame = 0;
+    const draw = () => {
+      const bounds = canvas.getBoundingClientRect();
+      const width = bounds.width;
+      const height = bounds.height;
+      const pixelRatio = window.devicePixelRatio || 1;
+      const pixelWidth = Math.round(width * pixelRatio);
+      const pixelHeight = Math.round(height * pixelRatio);
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+      }
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      if (!volumeProfileVisible || !profile || width < 80 || height < 40) return;
+
+      const plotRight = width - current.priceChart.priceScale("right").width();
+      if (plotRight < 40) return;
+      const profileWidth = Math.min(88, Math.max(36, plotRight * 0.2));
+      const maxVolume = Math.max(...profile.bins.map((bin) => bin.volume));
+      const pocIndex = profile.bins.findIndex((bin, index) => profile.poc >= bin.low && (profile.poc < bin.high || index === profile.bins.length - 1));
+
+      profile.bins.forEach((bin, index) => {
+        if (bin.volume <= 0) return;
+        const top = current.candleSeries.priceToCoordinate(bin.high);
+        const bottom = current.candleSeries.priceToCoordinate(bin.low);
+        if (top == null || bottom == null) return;
+        const barWidth = Math.max(1, profileWidth * bin.volume / maxVolume);
+        context.fillStyle = index === pocIndex
+          ? theme === "dark" ? "rgba(241, 197, 83, 0.75)" : "rgba(207, 139, 35, 0.68)"
+          : theme === "dark" ? "rgba(70, 190, 208, 0.58)" : "rgba(79, 123, 147, 0.38)";
+        context.fillRect(plotRight - barWidth, top, barWidth, Math.max(1, bottom - top - 1));
+      });
+
+      const labelX = Math.max(4, plotRight - profileWidth);
+      const drawLevel = (price: number, label: string, color: string, dashed: boolean) => {
+        const y = current.candleSeries.priceToCoordinate(price);
+        if (y == null || y < 0 || y > height) return;
+        context.beginPath();
+        context.strokeStyle = color;
+        context.lineWidth = label === "POC" ? 1.5 : 1;
+        context.setLineDash(dashed ? [3, 2] : []);
+        context.moveTo(labelX, y);
+        context.lineTo(plotRight, y);
+        context.stroke();
+        context.setLineDash([]);
+
+        const text = `${label}≈${current.candleSeries.priceFormatter().format(price)}`;
+        context.font = "600 9px Arial, sans-serif";
+        const tagWidth = Math.ceil(context.measureText(text).width) + 6;
+        const tagY = Math.max(10, Math.min(height - 3, y));
+        context.fillStyle = theme === "dark" ? "rgba(31, 30, 25, 0.96)" : "rgba(255, 255, 255, 0.92)";
+        context.fillRect(labelX, tagY - 9, tagWidth, 12);
+        context.fillStyle = color;
+        context.textBaseline = "middle";
+        context.fillText(text, labelX + 3, tagY - 3);
+      };
+
+      drawLevel(profile.vah, "VAH", theme === "dark" ? "#69D2EE" : "#667A83", true);
+      drawLevel(profile.val, "VAL", theme === "dark" ? "#69D2EE" : "#667A83", true);
+      drawLevel(profile.poc, "POC", theme === "dark" ? "#FFD76F" : "#B66F13", false);
+    };
+    const scheduleDraw = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        draw();
+      });
+    };
+
+    draw();
+    const observer = new ResizeObserver(scheduleDraw);
+    if (canvas.parentElement) observer.observe(canvas.parentElement);
+    const interactionSurface = priceContainer.current?.parentElement;
+    interactionSurface?.addEventListener("pointermove", scheduleDraw);
+    interactionSurface?.addEventListener("pointerup", scheduleDraw);
+    interactionSurface?.addEventListener("wheel", scheduleDraw, { passive: true });
+    window.addEventListener("resize", scheduleDraw);
+    return () => {
+      observer.disconnect();
+      interactionSurface?.removeEventListener("pointermove", scheduleDraw);
+      interactionSurface?.removeEventListener("pointerup", scheduleDraw);
+      interactionSurface?.removeEventListener("wheel", scheduleDraw);
+      window.removeEventListener("resize", scheduleDraw);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [quote, visibleRange, volumeProfileVisible, theme]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-1.5">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-[#DDE3E8] bg-white">
         <div className="flex h-7 shrink-0 items-center justify-between border-b border-[#E5E9ED] bg-[#FCFDFE] px-2 text-[11px] text-[#75818C]">
-          <span className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
             <span>价格 / K线</span>
-            <span className="inline-flex items-center gap-1.5 text-[10px]">
-              <span>近45根</span>
-              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: palette.markerVolume }} />量</span>
-              <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: palette.markerEntity }} />实体</span>
-            </span>
-          </span>
-          <span className="flex items-center gap-2">
+            <details className="relative z-20 text-[10px]">
+              <summary
+                aria-label="筛选主图信号"
+                title="成交量和实体排名取近45根已完成K线"
+                className="cursor-pointer list-none rounded border border-[#CDD7DC] bg-white px-1.5 py-0.5 font-medium text-[#5C707A] hover:bg-[#F2F5F6]"
+              >信号 {selectedSignalKinds.length}/{SIGNAL_FILTER_OPTIONS.length} ▾</summary>
+              <div role="group" aria-label="选择显示的信号" className="absolute left-0 top-[calc(100%+5px)] w-36 rounded border border-[#D8E0E4] bg-white p-2 text-[#52636D] shadow-md">
+                {SIGNAL_FILTER_OPTIONS.map(({ kind, label }) => (
+                  <label key={kind} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-[#F2F5F6]">
+                    <input
+                      type="checkbox"
+                      aria-label={label}
+                      checked={selectedSignalKinds.includes(kind)}
+                      onChange={() => onSelectedSignalKindsChange((selected) => selected.includes(kind)
+                        ? selected.filter((item) => item !== kind)
+                        : [...selected, kind])}
+                      className="accent-[#607F8A]"
+                    />
+                    {label}
+                  </label>
+                ))}
+                <div className="mt-1 flex justify-between border-t border-[#E7ECEF] pt-1">
+                  <button type="button" aria-label="全选主图信号" onClick={() => onSelectedSignalKindsChange(SIGNAL_FILTER_OPTIONS.map((option) => option.kind))} className="rounded px-1 py-0.5 hover:bg-[#F2F5F6]">全选</button>
+                  <button type="button" aria-label="清空主图信号" onClick={() => onSelectedSignalKindsChange([])} className="rounded px-1 py-0.5 hover:bg-[#F2F5F6]">清空</button>
+                </div>
+              </div>
+            </details>
+            <details className="relative z-30 text-[10px]">
+              <summary
+                aria-label="图表标注工具"
+                title="趋势线、水平线、垂直线和圆形区间"
+                className="cursor-pointer list-none rounded border border-[#CDD7DC] bg-white px-1.5 py-0.5 font-medium text-[#5C707A] hover:bg-[#F2F5F6]"
+              >标注{activeDrawingTool && pendingDrawingPoint ? "·选终点" : " ▾"}</summary>
+              <div role="group" aria-label="图表标注工具" className="absolute right-0 top-[calc(100%+5px)] w-48 rounded border border-[#D8E0E4] bg-white p-2 text-[#52636D] shadow-md">
+                <div className="grid grid-cols-2 gap-1">
+                  <button type="button" aria-pressed={activeDrawingTool === "trendline"} title="点击两个K线位置绘制趋势线" onClick={() => { setActiveDrawingTool((tool) => tool === "trendline" ? null : "trendline"); setPendingDrawingPoint(null); }} className={`rounded px-2 py-1 text-left ${activeDrawingTool === "trendline" ? "bg-[#E8EFF2] font-medium text-[#3F5F6B]" : "hover:bg-[#F0F3F4]"}`}>趋势线</button>
+                  <button type="button" aria-pressed={activeDrawingTool === "horizontal"} title="点击图表放置水平线" onClick={() => { setActiveDrawingTool((tool) => tool === "horizontal" ? null : "horizontal"); setPendingDrawingPoint(null); }} className={`rounded px-2 py-1 text-left ${activeDrawingTool === "horizontal" ? "bg-[#E8EFF2] font-medium text-[#3F5F6B]" : "hover:bg-[#F0F3F4]"}`}>水平线</button>
+                  <button type="button" aria-pressed={activeDrawingTool === "vertical"} title="点击图表标记时间位置" onClick={() => { setActiveDrawingTool((tool) => tool === "vertical" ? null : "vertical"); setPendingDrawingPoint(null); }} className={`rounded px-2 py-1 text-left ${activeDrawingTool === "vertical" ? "bg-[#E8EFF2] font-medium text-[#3F5F6B]" : "hover:bg-[#F0F3F4]"}`}>垂直线</button>
+                  <button type="button" aria-pressed={activeDrawingTool === "rangeCircle"} title="依次点击区间起点和终点，按该段K线最高/最低绘制半透明圆形区域" onClick={() => { setActiveDrawingTool((tool) => tool === "rangeCircle" ? null : "rangeCircle"); setPendingDrawingPoint(null); }} className={`rounded px-2 py-1 text-left ${activeDrawingTool === "rangeCircle" ? "bg-[#E8EFF2] font-medium text-[#3F5F6B]" : "hover:bg-[#F0F3F4]"}`}>圆形区间</button>
+                </div>
+                <div className="my-1 flex items-center gap-2 border-t border-[#E7ECEF] pt-1">
+                  <PriceAlertsMenu
+                    contract={quote.contract}
+                    lastPrice={quote.last_price}
+                    alerts={contractAlerts}
+                    horizontalPrices={horizontalPrices}
+                    onAdd={onAddPriceAlert}
+                    onToggle={onTogglePriceAlert}
+                    onRemove={onRemovePriceAlert}
+                  />
+                  <button type="button" title="撤销最后一条划线" disabled={!drawings.length} onClick={() => { setDrawings((items) => undoChartDrawing(items)); setPendingDrawingPoint(null); }} className="rounded px-2 py-1 hover:bg-[#F0F3F4] disabled:cursor-default disabled:opacity-40">撤销</button>
+                  <button type="button" title="清除当前合约和周期的全部划线" disabled={!drawings.length} onClick={() => { setDrawings([]); setPendingDrawingPoint(null); }} className="rounded px-2 py-1 hover:bg-[#F0F3F4] disabled:cursor-default disabled:opacity-40">清空</button>
+                </div>
+              </div>
+            </details>
+          </div>
+          <div className="flex items-center gap-2">
             <button
               type="button"
               aria-pressed={channelVisible}
@@ -424,25 +971,46 @@ function TerminalCharts({
               <i className={`inline-block h-px w-3 border-t border-dashed ${channelVisible ? "border-[#6F929A]" : "border-[#AAB3BA]"}`} />
               ATR通道
             </button>
+            <button
+              type="button"
+              aria-label="切换筹码峰估算"
+              aria-pressed={volumeProfileVisible}
+              title="基于可视窗口 K 线成交量的价位估算，不代表真实持仓成本"
+              onClick={() => onVolumeProfileVisibleChange(!volumeProfileVisible)}
+              className={`rounded px-1 py-0.5 transition-colors ${volumeProfileVisible ? "bg-[#F4E7D2] text-[#94611E] hover:bg-[#EFE0C6]" : "text-[#9AA4AD] hover:bg-[#F0F2F4] hover:text-[#596570]"}`}
+            >
+              筹码峰估算
+            </button>
             <span><i className="mr-1 inline-block h-px w-3 align-middle" style={{ backgroundColor: palette.swingPath }} />通道轨迹</span>
             {quote.timeframe !== "1d" && quote.timeframe !== "3d" && <>
               <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-sm ring-1 ring-[#DFE6E9]" style={{ backgroundColor: palette.sessionBackground.night }} />夜盘</span>
               <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-sm ring-1 ring-[#ECE7DB]" style={{ backgroundColor: palette.sessionBackground.day }} />日盘</span>
             </>}
             <span className="hidden sm:inline">青绿涨 · 珊瑚红跌</span>
-          </span>
+          </div>
         </div>
         <div className="relative min-h-0 w-full flex-1">
-          <div ref={priceContainer} className="absolute inset-0" />
-          {hoveredExtreme && <div
-            className="pointer-events-none absolute z-10 rounded border border-[#DDE3E8] bg-white/95 px-2 py-1 text-[10px] leading-4 text-[#4F5D67] shadow-sm"
+          <div ref={priceContainer} className={`absolute inset-0 ${activeDrawingTool ? "cursor-crosshair" : ""}`} />
+          <canvas ref={profileCanvas} aria-hidden="true" className="pointer-events-none absolute inset-0 z-[5] h-full w-full" />
+          <canvas ref={drawingsCanvas} aria-hidden="true" className="pointer-events-none absolute inset-0 z-[6] h-full w-full" />
+          <canvas ref={signalCanvas} aria-hidden="true" className="pointer-events-none absolute inset-0 z-[7] h-full w-full" />
+          {hoveredSignalBubble && <div
+            role="tooltip"
+            className="pointer-events-none absolute z-10 min-w-[220px] rounded border border-[#DDE3E8] bg-white/95 px-2 py-1.5 text-[10px] leading-4 text-[#4F5D67] shadow-sm"
             style={{
-              left: Math.max(4, Math.min(hoveredExtreme.x + 14, (priceContainer.current?.clientWidth ?? 240) - 220)),
-              top: Math.max(4, Math.min(hoveredExtreme.y + 14, (priceContainer.current?.clientHeight ?? 48) - 48)),
+              left: Math.max(4, Math.min(hoveredSignalBubble.x + 14, (priceContainer.current?.clientWidth ?? 260) - 260)),
+              top: Math.max(4, Math.min(
+                hoveredSignalBubble.y + 14,
+                (priceContainer.current?.clientHeight ?? 160) - Math.min(42 + hoveredSignalBubble.bubble.factors.length * 18, 150),
+              )),
             }}
           >
-            {hoveredExtreme.bar.volumeRank != null && <div>成交量第{hoveredExtreme.bar.volumeRank}：{hoveredExtreme.bar.volume == null ? "--" : `${formatNumber(hoveredExtreme.bar.volume)} 手`}</div>}
-            {hoveredExtreme.bar.bodyRank != null && <div>实体第{hoveredExtreme.bar.bodyRank}：{hoveredExtreme.bar.bodySize == null ? "--" : formatNumber(hoveredExtreme.bar.bodySize)}</div>}
+            {hoveredSignalBubble.bubble.factors.map((factor, index) => (
+              <div key={factor.kind + index} className="flex items-start gap-1.5">
+                <span className="shrink-0 font-semibold" style={{ color: factor.color }}>{factor.label}</span>
+                <span>{factor.detail}</span>
+              </div>
+            ))}
           </div>}
         </div>
       </div>
@@ -591,6 +1159,12 @@ export default function MarketTerminalPage() {
   const [contract, setContract] = useState("P2701");
   const [timeframe, setTimeframe] = useState<MarketTimeframe>("1d");
   const [subchartMode, setSubchartMode] = useState<SubchartMode>("oi");
+  const [selectedSignalKinds, setSelectedSignalKinds] = useState<SignalBubbleFactorKind[]>(
+    () => SIGNAL_FILTER_OPTIONS.map((option) => option.kind),
+  );
+  const [priceAlerts, setPriceAlerts] = useState<PriceAlert[]>([]);
+  const [priceAlertsReady, setPriceAlertsReady] = useState(false);
+  const [priceAlertNotices, setPriceAlertNotices] = useState<PriceAlertNotice[]>([]);
   const [theme, setTheme] = useState<TerminalTheme>("light");
   const uiPalette = terminalUiPalette(theme);
   const terminalSurfaceStyle = {
@@ -611,6 +1185,7 @@ export default function MarketTerminalPage() {
   } as CSSProperties;
   const [themeReady, setThemeReady] = useState(false);
   const [channelVisible, setChannelVisible] = useState(true);
+  const [volumeProfileVisible, setVolumeProfileVisible] = useState(false);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [snapshot, setSnapshot] = useState<TerminalQuote | null>(null);
   const [quoteCache, setQuoteCache] = useState<Record<string, WatchlistQuote>>({});
@@ -627,6 +1202,64 @@ export default function MarketTerminalPage() {
   const [compareSector, setCompareSector] = useState<string | null>(null);
   const [collapsedSectors, setCollapsedSectors] = useState<Record<string, boolean>>({});
   const commandInput = useRef<HTMLInputElement>(null);
+  const previousPriceSamples = useRef<Record<string, PriceSample>>({});
+
+  useEffect(() => {
+    try {
+      setPriceAlerts(parsePriceAlerts(window.localStorage.getItem(PRICE_ALERTS_KEY), CONTRACTS.map((item) => item.contract)));
+    } catch {
+      setPriceAlerts([]);
+    }
+    setPriceAlertsReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!priceAlertsReady) return;
+    try {
+      window.localStorage.setItem(PRICE_ALERTS_KEY, JSON.stringify(priceAlerts));
+    } catch {
+      // Alerts remain active for this session when browser storage is unavailable.
+    }
+  }, [priceAlerts, priceAlertsReady]);
+
+  useEffect(() => {
+    let nextAlerts = priceAlerts;
+    const triggered: PriceAlertNotice[] = [];
+    for (const quote of Object.values(quoteCache)) {
+      const sample: PriceSample = {
+        contract: quote.contract,
+        lastPrice: quote.last_price,
+        quoteTime: quote.quote_time,
+        status: quote.status,
+      };
+      const previous = previousPriceSamples.current[quote.contract] ?? null;
+      const result = checkPriceAlerts(nextAlerts, previous, sample);
+      nextAlerts = result.alerts;
+      triggered.push(...result.triggered.flatMap((alert) => sample.lastPrice == null ? [] : [{
+        id: `${alert.id}:${alert.triggeredAt}`,
+        alert,
+        observedPrice: sample.lastPrice,
+      }]));
+      previousPriceSamples.current[quote.contract] = sample;
+    }
+    if (!priceAlertsReady) return;
+    if (nextAlerts !== priceAlerts) setPriceAlerts(nextAlerts);
+    if (!triggered.length) return;
+    setPriceAlertNotices((current) => [...triggered, ...current].slice(0, 4));
+    if ("Notification" in window && Notification.permission === "granted") {
+      for (const notice of triggered) {
+        new Notification(`${notice.alert.contract} 价格预警`, {
+          body: `${notice.alert.direction === "above" ? "上穿" : "下穿"} ${formatNumber(notice.alert.price)}，最新 ${formatNumber(notice.observedPrice)}`,
+        });
+      }
+    }
+  }, [quoteCache, priceAlerts, priceAlertsReady]);
+
+  useEffect(() => {
+    if (!priceAlertNotices.length) return;
+    const timer = window.setTimeout(() => setPriceAlertNotices([]), 10000);
+    return () => window.clearTimeout(timer);
+  }, [priceAlertNotices]);
 
   useEffect(() => {
     let saved: string | null = null;
@@ -814,6 +1447,19 @@ export default function MarketTerminalPage() {
     setCommandOpen(false);
   };
 
+  const addPriceAlert = (price: number, direction: PriceAlertDirection) => {
+    const id = globalThis.crypto?.randomUUID?.() ?? `alert-${Date.now()}-${Math.random()}`;
+    setPriceAlerts((current) => [...current, { id, contract, price, direction, armed: true, triggeredAt: null }]);
+  };
+
+  const togglePriceAlert = (id: string) => {
+    setPriceAlerts((current) => current.map((alert) => alert.id === id
+      ? { ...alert, armed: !alert.armed, triggeredAt: alert.armed ? alert.triggeredAt : null }
+      : alert));
+  };
+
+  const removePriceAlert = (id: string) => setPriceAlerts((current) => current.filter((alert) => alert.id !== id));
+
   return (
     <main className={`terminal-theme terminal-theme-${theme} h-full min-h-0 overflow-hidden bg-[#F5F6F7] text-[#253041]`} style={terminalSurfaceStyle}>
       <div className="flex h-full min-h-0">
@@ -872,7 +1518,7 @@ export default function MarketTerminalPage() {
             {activeSnapshot?.connection_error && <div role="status" className="mb-1 shrink-0 rounded border border-[#E9E0CD] bg-[#F8F5EC] px-3 py-1.5 text-[11px] text-[#927F55]">{activeSnapshot.connection_error}</div>}
             <div className="flex min-h-0 flex-1 gap-2 overflow-hidden">
               <div className="h-full min-h-0 min-w-0 flex-1">
-                {loading && !quote ? <TerminalChartLoading subchartMode={subchartMode} /> : quote ? <TerminalCharts key={`${contract}-${timeframe}-${theme}`} theme={theme} quote={quote} subchartMode={subchartMode} onSubchartModeChange={setSubchartMode} channelVisible={channelVisible} onChannelVisibleChange={setChannelVisible} /> : <TerminalChartLoading subchartMode={subchartMode} />}
+                {loading && !quote ? <TerminalChartLoading subchartMode={subchartMode} /> : quote ? <TerminalCharts key={`${contract}-${timeframe}-${theme}`} theme={theme} quote={quote} subchartMode={subchartMode} onSubchartModeChange={setSubchartMode} channelVisible={channelVisible} onChannelVisibleChange={setChannelVisible} volumeProfileVisible={volumeProfileVisible} onVolumeProfileVisibleChange={setVolumeProfileVisible} selectedSignalKinds={selectedSignalKinds} onSelectedSignalKindsChange={setSelectedSignalKinds} priceAlerts={priceAlerts} onAddPriceAlert={addPriceAlert} onTogglePriceAlert={togglePriceAlert} onRemovePriceAlert={removePriceAlert} /> : <TerminalChartLoading subchartMode={subchartMode} />}
               </div>
               {contextVisible && <div className="h-full min-h-0 w-[252px] shrink-0 overflow-hidden rounded border border-[#DDE3E8] bg-white"><TerminalContextPanel contract={contract} /></div>}
             </div>
@@ -880,6 +1526,12 @@ export default function MarketTerminalPage() {
           </div>
         </section>
       </div>
+      {priceAlertNotices.length > 0 && <div className="fixed top-16 z-50 flex w-72 flex-col gap-1.5" style={{ right: contextVisible ? 268 : 16 }}>
+        {priceAlertNotices.map((notice) => <div key={notice.id} role="alert" className="rounded border border-[#E3D6BF] bg-[#FFFCF6] px-3 py-2 text-[11px] text-[#645B4F] shadow-lg">
+          <div className="flex items-center justify-between gap-2"><strong className="text-[#765B34]">{notice.alert.contract} {notice.alert.direction === "above" ? "上穿" : "下穿"}预警</strong><button type="button" aria-label="关闭预警提示" onClick={() => setPriceAlertNotices((current) => current.filter((item) => item.id !== notice.id))} className="text-[#8D8376]">×</button></div>
+          <div className="mt-0.5">目标 {formatNumber(notice.alert.price)} · 最新 {formatNumber(notice.observedPrice)}</div>
+        </div>)}
+      </div>}
       {commandOpen && <div className="fixed inset-0 z-50 flex items-start justify-center bg-[#253041]/25 px-4 pt-[12vh]" onMouseDown={(event) => { if (event.target === event.currentTarget) setCommandOpen(false); }}>
         <div role="dialog" aria-modal="true" aria-label="搜索合约" className="w-full max-w-[520px] overflow-hidden rounded-lg border border-[#D8E0E6] bg-white shadow-[0_18px_60px_rgba(37,48,65,0.24)]">
           <div className="flex items-center gap-2 border-b border-[#E6EBEF] px-3"><Search size={16} className="shrink-0 text-[#87939D]" /><input ref={commandInput} aria-label="按名称、代码或板块搜索" value={commandQuery} onChange={(event) => { setCommandQuery(event.target.value); setCommandIndex(0); }} onKeyDown={(event) => {

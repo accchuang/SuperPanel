@@ -46,6 +46,7 @@ SYMBOL_EXCHANGE = {
     "TA": "CZCE",
     "V": "DCE",
     "EB": "DCE",
+    "EG": "DCE",
     "RU": "SHFE",
     "Y": "DCE",
     "ZN": "SHFE",
@@ -54,8 +55,8 @@ SYMBOL_EXCHANGE = {
 MARKET_IDS = {"SHFE": "113", "DCE": "114", "CZCE": "115", "INE": "142", "GFEX": "225", "CFFEX": "220"}
 CZCE_SYMBOLS = {"AP", "CF", "CJ", "CY", "FG", "JR", "LR", "MA", "OI", "PF", "PK", "PM", "PX", "RI", "RM", "RS", "SA", "SF", "SH", "SM", "SR", "TA", "UR", "WH", "ZC"}
 DEFAULT_CONTRACTS = [
-    "P2701", "OI2701", "Y2701", "LH2611", "JD2611", "SR2701", "CF2701",
-    "M2701", "A2611", "B2611", "V2701", "TA2701", "EB2611", "MA2610",
+    "P2701", "I2701", "HC2701", "JM2701", "EG2701", "OI2701", "Y2701", "LH2611", "JD2611", "SR2701", "CF2701",
+    "M2701", "A2611", "B2611", "V2701", "TA2701", "EB2611", "MA2611",
     "RU2701", "NR2611", "BR2611",
 ]
 

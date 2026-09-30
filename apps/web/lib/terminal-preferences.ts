@@ -22,8 +22,10 @@ export function resolveTerminalPreferences(
     if (!saved || typeof saved !== "object" || Array.isArray(saved)) return defaults;
     const values = saved as Record<string, unknown>;
     return {
-      contract: typeof values.contract === "string" && validContracts.includes(values.contract)
-        ? values.contract : defaults.contract,
+      contract: values.contract === "MA2610" && validContracts.includes("MA2611")
+        ? "MA2611"
+        : typeof values.contract === "string" && validContracts.includes(values.contract)
+          ? values.contract : defaults.contract,
       timeframe: typeof values.timeframe === "string" && validTimeframes.includes(values.timeframe as MarketTimeframe)
         ? values.timeframe as MarketTimeframe : defaults.timeframe,
       subchartMode: values.subchartMode === "oi" || values.subchartMode === "volume"

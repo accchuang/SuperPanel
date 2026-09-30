@@ -45,67 +45,77 @@ input {
    dark palette to the terminal route so the research dashboard stays unchanged. */
 .terminal-theme-dark {
   color-scheme: dark;
+  color: #e4d8bf;
+  background-color: #191711 !important;
+  background-image: radial-gradient(ellipse at 8% 0%, rgb(52 155 139 / 10%), transparent 38%), radial-gradient(ellipse at 96% 4%, rgb(192 91 59 / 9%), transparent 34%);
 }
 
 .terminal-theme-dark [class*="bg-white"],
 .terminal-theme-dark [class*="bg-[#"] {
-  background-color: #111a24 !important;
+  background-color: #211f19 !important;
 }
 
-.terminal-theme-dark [class*="bg-[#F5F6F7]"] { background-color: #0b1219 !important; }
-.terminal-theme-dark [class*="bg-[#FCFDFE]"] { background-color: #131d27 !important; }
-.terminal-theme-dark [class*="bg-[#FBFCFD]"] { background-color: #141f29 !important; }
-.terminal-theme-dark [class*="bg-[#F8FAFB]"] { background-color: #15222c !important; }
+.terminal-theme-dark [class*="bg-[#F5F6F7]"] { background-color: #191711 !important; }
+.terminal-theme-dark [class*="bg-[#FCFDFE]"] { background-color: #242119 !important; }
+.terminal-theme-dark [class*="bg-[#FBFCFD]"] { background-color: #28241c !important; }
+.terminal-theme-dark [class*="bg-[#F8FAFB]"] { background-color: #29251d !important; }
 .terminal-theme-dark [class*="bg-[#E8EFF2]"],
 .terminal-theme-dark [class*="bg-[#EAF0F2]"],
-.terminal-theme-dark [class*="bg-[#DFE8EC]"] { background-color: #203743 !important; }
-.terminal-theme-dark [class*="bg-[#F8F5EC]"] { background-color: #30291f !important; }
-.terminal-theme-dark [class*="bg-[#FBF6F5]"] { background-color: #30201f !important; }
-.terminal-theme-dark [class*="bg-[#F1F6F3]"] { background-color: #1b2c25 !important; }
+.terminal-theme-dark [class*="bg-[#DFE8EC]"] { background-color: #26383A !important; }
+.terminal-theme-dark [class*="bg-[#F4E7D2]"] { background-color: #49391F !important; }
+.terminal-theme-dark [class*="bg-[#F8F5EC]"] { background-color: #332b1d !important; }
+.terminal-theme-dark [class*="bg-[#FBF6F5]"] { background-color: #33241e !important; }
+.terminal-theme-dark [class*="bg-[#FFFCF6]"] { background-color: #2d281d !important; }
+.terminal-theme-dark [class*="bg-[#F1F6F3]"] { background-color: #292b20 !important; }
 .terminal-theme-dark [class*="bg-[#F5F7F8]"],
 .terminal-theme-dark [class*="bg-[#F3F5F6]"],
-.terminal-theme-dark [class*="bg-[#F2F4F5]"] { background-color: #1a2732 !important; }
+.terminal-theme-dark [class*="bg-[#F2F4F5]"] { background-color: #2b281f !important; }
 
 .terminal-theme-dark [class*="hover:bg-[#"]:hover {
-  background-color: #1d2d3a !important;
+  background-color: #343024 !important;
 }
 
 .terminal-theme-dark [class*="border-[#"],
 .terminal-theme-dark [class*="divide-[#"],
 .terminal-theme-dark [class*="ring-[#"] {
-  border-color: #2a3a47 !important;
+  border-color: #40392c !important;
 }
 
 .terminal-theme-dark [class*="text-[#"] {
-  color: #909ea9 !important;
+  color: #b4a98f !important;
 }
 
 .terminal-theme-dark [class*="text-[#2"],
 .terminal-theme-dark [class*="text-[#3"],
 .terminal-theme-dark [class*="text-[#4"],
 .terminal-theme-dark [class*="text-[#5"] {
-  color: #adb8c1 !important;
+  color: #e1d4b9 !important;
 }
 
 .terminal-theme-dark [class*="text-[#7"],
 .terminal-theme-dark [class*="text-[#8"],
 .terminal-theme-dark [class*="text-[#9"],
 .terminal-theme-dark [class*="text-[#A"] {
-  color: #788894 !important;
+  color: #b0a48a !important;
 }
 
 .terminal-theme-dark [class*="placeholder:text-[#"]::placeholder {
-  color: #697985 !important;
+  color: #9d927a !important;
 }
+
+.terminal-theme-dark [class*="text-[#6E8794]"] { color: #69D2EE !important; }
+.terminal-theme-dark [class*="text-[#9A9183]"] { color: #F09270 !important; }
+.terminal-theme-dark [class*="text-[#537565]"],
+.terminal-theme-dark [class*="text-[#648271]"] { color: #79DDB5 !important; }
+.terminal-theme-dark [class*="text-[#7F8A90]"] { color: #B7AA8F !important; }
 
 .terminal-theme-dark [class*="text-[#C5442B]"],
 .terminal-theme-dark [class*="text-[#D94727]"],
-.terminal-theme-dark [class*="text-[#966A66]"] { color: #d97873 !important; }
+.terminal-theme-dark [class*="text-[#966A66]"] { color: #F18A6B !important; }
 .terminal-theme-dark [class*="text-[#31864A]"],
-.terminal-theme-dark [class*="text-[#35A04C]"],
-.terminal-theme-dark [class*="text-[#648271]"] { color: #54b3a7 !important; }
+.terminal-theme-dark [class*="text-[#35A04C]"] { color: #7ADDB1 !important; }
 .terminal-theme-dark [class*="text-[#927F55]"],
-.terminal-theme-dark [class*="text-[#805A3D]"] { color: #bda36c !important; }
+.terminal-theme-dark [class*="text-[#805A3D]"] { color: #F0C96A !important; }
 
 .terminal-theme-dark .terminal-watchlist {
   background-color: var(--terminal-watchlist-surface) !important;
@@ -133,7 +143,7 @@ input {
 }
 
 .terminal-theme-dark .terminal-watchlist [class*="hover:bg-[#"]:hover {
-  background-color: #16242d !important;
+  background-color: #343024 !important;
 }
 
 .terminal-theme-dark .terminal-leaderboard {
@@ -181,11 +191,11 @@ input {
 }
 
 .terminal-theme-dark .terminal-leaderboard-change-increase:not(i) {
-  color: #f2b3aa !important;
+  color: #FF9B78 !important;
 }
 
 .terminal-theme-dark .terminal-leaderboard-change-decrease:not(i) {
-  color: #9bd5c1 !important;
+  color: #7ADDB1 !important;
 }
 
 .terminal-theme-dark > [class*="fixed"][class*="bg-[#253041]/25"] {
@@ -193,34 +203,34 @@ input {
 }
 
 html[data-market-terminal-theme="dark"] body {
-  background: #0b1219;
+  background: #191711;
 }
 
 html[data-market-terminal-theme="dark"] .app-shell-terminal > aside {
-  border-color: #243441 !important;
-  background: #0d151e !important;
-  color: #adb8c1 !important;
+  border-color: #393327 !important;
+  background: #1e1b15 !important;
+  color: #c9bea9 !important;
 }
 
 html[data-market-terminal-theme="dark"] .app-shell-terminal > aside a {
-  color: #8999a5 !important;
+  color: #9b907e !important;
 }
 
 html[data-market-terminal-theme="dark"] .app-shell-terminal > aside a[aria-current="page"] {
-  background: #203743 !important;
-  color: #c1cbd2 !important;
+  background: #26383A !important;
+  color: #B9F0D5 !important;
 }
 
 html[data-market-terminal-theme="dark"] .app-shell-terminal > aside button {
-  color: #8999a5 !important;
+  color: #9b907e !important;
 }
 
 html[data-market-terminal-theme="dark"] .app-shell-terminal > aside button:hover {
-  background: #1b2b37 !important;
-  color: #c1cbd2 !important;
+  background: #302F25 !important;
+  color: #F1D47A !important;
 }
 
 html[data-market-terminal-theme="dark"] .app-shell-terminal > aside > div:last-child {
-  border-color: #243441 !important;
-  color: #657784 !important;
+  border-color: #393327 !important;
+  color: #817763 !important;
 }
